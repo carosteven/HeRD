@@ -1,0 +1,9 @@
+[submodule "/Users/stevencaro/repos/HeRD/submodules/BenchNPIN"]
+	path = /Users/stevencaro/repos/HeRD/submodules/BenchNPIN
+	url = https://github.com/IvanIZ/BenchNPIN
+[submodule "submodules/diffusionPolicy"]
+	path = submodules/diffusionPolicy
+	url = https://github.com/carosteven/diffusionPolicy
+[submodule "submodules/spfa"]
+	path = submodules/spfa
+	url = https://github.com/IvanIZ/spfa.git
