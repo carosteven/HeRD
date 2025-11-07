@@ -18,7 +18,7 @@ Official implementation for our paper:
 
 ### 1. Clone the repository
 ```bash
-git clone --recurse-submodules https://github.com/your-username/HeRD.git
+git clone --recurse-submodules https://github.com/carosteven/HeRD.git
 ```
 
 If you **already cloned the repo without submodules**, run:

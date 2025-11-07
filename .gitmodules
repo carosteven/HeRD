@@ -1,5 +1,5 @@
-[submodule "/Users/stevencaro/repos/HeRD/submodules/BenchNPIN"]
-	path = /Users/stevencaro/repos/HeRD/submodules/BenchNPIN
+[submodule "submodules/BenchNPIN"]
+	path = submodules/BenchNPIN
 	url = https://github.com/IvanIZ/BenchNPIN
 [submodule "submodules/diffusionPolicy"]
 	path = submodules/diffusionPolicy
