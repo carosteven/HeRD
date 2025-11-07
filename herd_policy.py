@@ -77,7 +77,7 @@ class HeRDPolicy():
         else:
             train = False
             evaluate = True
-            final_exploration = 0.0
+            final_exploration = self.cfg.evaluate.final_exploration
             checkpoint_path = ''
             resume_training = False
             job_id_to_resume = None

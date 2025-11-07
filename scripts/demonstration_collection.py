@@ -16,7 +16,7 @@ from scipy.interpolate import interp1d
 # import zarr
 from pynput import keyboard
 from os.path import dirname
-from submodules.BenchNPIN.benchnpin.baselines.box_delivery.SAM.policy import BoxDeliverySAM
+from herd_policy import HeRDPolicy
 from diffusionPolicy.common.replay_buffer import ReplayBuffer
 import pygame
 
@@ -152,11 +152,8 @@ Plan:
     need to visualize goal --> destination from SAM
 '''
 def collect_demos():
-    path = 'demo_data/box_delivery_teleop_demo_le_final.zarr'
-    # path = 'demo_data/box_delivery_teleop_demo_nopush_le.zarr'
+    path = 'demonstration_data/test.zarr'
     replay_buffer = ReplayBuffer.create_from_path(path, mode='a')
-    print(np.sum(replay_buffer['valid_obs_mask']))
-    input()
 
     # ensure different environments
     seed = replay_buffer.n_episodes
@@ -170,14 +167,18 @@ def collect_demos():
             'obstacle_config': 'large_empty', # options are small_empty, small_columns, large_columns, large_divider
         },
         'boxes': {
-            'num_boxes_small': 10,
+            'num_boxes_large': 20,
         },
         'demonstration': {
             'demonstration_mode': True,
             'teleop_mode': True,
             'step_size': WAYPOINT_MOVING_THRESHOLD/2
         },
+        'train': {
+            'train_mode': False,
+        },
         'evaluate': {
+            'eval_mode': True,
             'final_exploration': 0.1,
         },
         'misc': {
@@ -185,31 +186,19 @@ def collect_demos():
             'inactivity_cutoff': 10000,  # set to a large number to avoid inactivity cutoff
             'random_seed': seed,
         },
-        'ablation': {
-            'better_pushing': True,
+        'rl_policy': {
+            'model_path': 'models/rl_models',
+            'model_name': 'herd_rl_policy',
         }
     }
-    env = gym.make('box-delivery-v0', cfg=cfg)
-    env = env.unwrapped
-    dummy_observation, _ = env.reset()
-
-    # model_name = 'bp_per_qsdp_term_le'
-    model_name = 'bp_qsdp_se'
-    model_path = 'models/box_delivery/new_robot'
 
     # Initialize the policy
-    policy = BoxDeliverySAM(cfg=env.cfg, model_name=model_name, model_path=model_path)
-    policy.act(dummy_observation, env.action_space.high, env.num_channels)
+    policy = HeRDPolicy(cfg)
 
-    path_length = 0
-    # step_size = 0.1
-    # step_size = WAYPOINT_MOVING_THRESHOLD
     step_size = cfg['demonstration']['step_size']
-    horizon = env.cfg.diffusion.horizon
+    horizon = policy.cfg.diffusion.horizon
 
-    observation, info = env.reset()
-    # record_transition(observation, observation, [info['state'][0], info['state'][1]], 0, False, False)
-    # prev_state = [info['state'][0], info['state'][1]]
+    observation, info = policy.env.reset()
 
     terminated = False
     truncated = False
@@ -227,10 +216,10 @@ def collect_demos():
             truncated = False
             while not terminated:
                 # get action from policy
-                goal_ravelled = policy.act(observation)
+                goal_ravelled = policy.rl_policy.predict(observation)
 
                 # one step is travelling to the goal
-                observation, reward, terminated, truncated, info = env.step(goal_ravelled)
+                observation, reward, terminated, truncated, info = policy.env.step(path=None, action=goal_ravelled)
                 episodes.append(info['demonstration'])
                 # num_demos += len(episodes[-1])
                 num_demos += 1
@@ -267,7 +256,7 @@ def collect_demos():
                     data_dict['valid_obs_mask'] = valid_mask
                     replay_buffer.add_episode(data_dict, compressors='default')
             episodes = []
-            observation, _ = env.reset()
+            observation, _ = policy.env.reset()
             print(num_demos)
 
     else:
@@ -277,26 +266,26 @@ def collect_demos():
                 while listener.running:  # While the listener is active
                     episode = list()
 
-                    prev_state = [info['state'][0], info['state'][1]]
+                    prev_state = [info['robot_pose'][0], info['robot_pose'][1]]
                     
                     # current robot pose
-                    robot_current_position, robot_current_heading = env.robot.body.position, env.restrict_heading_range(env.robot.body.angle)
+                    robot_current_position, robot_current_heading = policy.env.robot.body.position, policy.env.restrict_heading_range(policy.env.robot.body.angle)
                     robot_current_position = list(robot_current_position)  
 
-                    goal_ravelled = policy.act(observation)
+                    goal_ravelled, _ = policy.rl_policy.predict(observation)
                     if break_nonmovement_action:
                         # sometimes the goal can be really close to the robot such that it hits without moving
                         # if so then can break the cycle with an action far behind the robot
                         goal_ravelled = 95*94 + 45
                         break_nonmovement_action = False
 
-                    goal = env.position_controller.get_target_position(robot_current_position, robot_current_heading, goal_ravelled) 
+                    goal = policy.env.position_controller.get_waypoints_to_spatial_action(robot_current_position, robot_current_heading, goal_ravelled)[0][-1][0:2]
 
                     # display goal in environment
-                    env.renderer.goal_point = goal
+                    # policy.env.renderer.goal_point = goal
+                    policy.env.goal_point = goal.tolist()
 
                     reached_goal = False
-                    test = True
                     ignore_curr_demo = False
                     
                     t = 0
@@ -326,7 +315,7 @@ def collect_demos():
                         print("command: ", command, "; step: ", t, \
                             "; num completed: ", info['cumulative_boxes'],  end="\r")
 
-                        if env.distance((info['state'][0], info['state'][1]), goal) < WAYPOINT_MOVING_THRESHOLD: # or env.robot_hit_obstacle:
+                        if policy.env.distance((info['robot_pose'][0], info['robot_pose'][1]), goal) < WAYPOINT_MOVING_THRESHOLD: # or env.robot_hit_obstacle:
                             reached_goal = True
 
                         # command = OTHER
@@ -334,7 +323,7 @@ def collect_demos():
                         #     env.render()
 
                         # only record points based on distance interval
-                        if (((info['state'][0] - prev_state[0])**2 + (info['state'][1] - prev_state[1])**2)**(0.5) >= step_size) or terminated or truncated or reached_goal:
+                        if (((info['robot_pose'][0] - prev_state[0])**2 + (info['robot_pose'][1] - prev_state[1])**2)**(0.5) >= step_size) or terminated or truncated or reached_goal:
                             # goal = np.array(goal)
                             # action = np.array(info['state'][:2])
                             # data = {
@@ -344,14 +333,13 @@ def collect_demos():
                             #     'goal': np.float32(goal),
                             #     'action': np.float32(action)
                             # }
-                            data = env.get_demonstration_data([info['obs_vertices'], info['obs_positions'], info['obs_combo']], goal, info['state'][:2])
+                            data = policy.env.get_demonstration_data([info['obs_vertices'], info['obs_positions'], info['obs_combo']], goal, info['robot_pose'][:2])
                             episode.append(data)
 
-                            prev_state = [info['state'][0], info['state'][1]]
+                            prev_state = [info['robot_pose'][0], info['robot_pose'][1]]
                             transition_count += 1
                         
-                        observation, reward, terminated, truncated, info = env.step(command, reached_goal=test, goal=goal_ravelled)
-                        test=False
+                        observation, reward, terminated, truncated, info = policy.env.step(path=None, action=command)
 
                         if terminated or truncated or reached_goal:
                             print("\nterminated: ", terminated, "; truncated: ", truncated, "; reached goal: ", reached_goal)
@@ -359,7 +347,7 @@ def collect_demos():
                             print()
                             print(transition_count)
                             if terminated:
-                                observation, info = env.reset()
+                                observation, info = policy.env.reset()
                             break
 
                         clock.tick(15)  # Limit the frame rate
@@ -420,9 +408,6 @@ def collect_demos():
             except KeyboardInterrupt:
                 print("Exiting teleoperation.")
 
-            finally:
-                env.close()
-    
     # don't save the demo if this trial is truncated
     if truncated:
         print("\n Demo truncated. Ignored")
@@ -430,4 +415,3 @@ def collect_demos():
 
 if __name__ == "__main__":
     collect_demos()
-    # env.close()

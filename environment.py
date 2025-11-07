@@ -11,6 +11,7 @@ import pymunk
 from pymunk import Vec2d
 from matplotlib import pyplot as plt
 from shapely.geometry import Point
+import math
 
 # Bench-NPIN related imports
 from submodules.BenchNPIN.benchnpin.common.cost_map import CostMap
@@ -73,9 +74,6 @@ class BoxDeliveryEnv(gym.Env):
 
     def __init__(self, cfg: dict = None):
         super(BoxDeliveryEnv, self).__init__()
-
-        # for paper
-        self.video = False
 
         # get current directory of this script
         self.current_dir = os.path.dirname(__file__)
@@ -176,6 +174,8 @@ class BoxDeliveryEnv(gym.Env):
         self.angular_speed_increment = 0.005
         self.linear_speed = 0.0
         self.linear_speed_increment = 0.02
+
+        self.goal_point = None
 
         if self.cfg.render.show_obs or self.cfg.render.show:
             # show state
@@ -668,15 +668,30 @@ class BoxDeliveryEnv(gym.Env):
             dist = self.shortest_path_distance(box_position, self.receptacle_position)
             initial_box_distances[box.idx] = dist
 
-        if not self.cfg.demonstration.demonstration_mode:
+        if self.cfg.demonstration.demonstration_mode:
+            if self.cfg.demonstration.teleop_mode:
+                self.teleop_control(action)
+                # move simulation forward
+                for _ in range(self.steps):
+                    self.space.step(self.dt / self.steps)
+                self.render()
+            else:
+                self.path, robot_move_sign = self.position_controller.get_waypoints_to_spatial_action(robot_initial_position, robot_initial_heading, action)
+                robot_distance, robot_turn_angle, self.demonstration_episode = self.execute_robot_path(robot_initial_position, robot_initial_heading, robot_move_sign, action=action, demo_mode=True)
+
+            # get new robot pose
+            robot_position, robot_heading = self.robot.body.position, self.restrict_heading_range(self.robot.body.angle)
+            robot_position = list(robot_position)
+            
+            # update distance moved
+            robot_distance = self.distance(robot_initial_position, robot_position)
+
+        else:
             if self.cfg.render.show:
                     self.renderer.update_path(path)
                     self.render()
                     # input()
-            robot_distance, robot_turn_angle = self.execute_robot_path(robot_initial_position, robot_initial_heading, path, action=action)
-            if self.cfg.demonstration.demonstration_mode:
-                truncated=True
-
+            robot_distance, robot_turn_angle = self.execute_robot_path(robot_initial_position, robot_initial_heading, path)
 
         # step the simulation until everything is still
         self.step_simulation_until_still()
@@ -702,7 +717,7 @@ class BoxDeliveryEnv(gym.Env):
                 sign_max_dist_moved = np.sign(dist_moved)
             boxes_distance += abs(dist_moved)
             self.box_distances[box.idx] += abs(dist_moved)
-            if not self.cfg.ablation.max_distance_reward and not self.cfg.ablation.sparse:
+            if not self.cfg.ablation.max_distance_reward:
                 robot_reward += self.partial_rewards_scale * dist_moved
 
             # reward for boxes in receptacle
@@ -712,15 +727,9 @@ class BoxDeliveryEnv(gym.Env):
                 self.box_clearance_statuses[box.idx] = True
                 self.inactivity_counter = 0
                 robot_boxes += 1
-                if self.cfg.ablation.box_dist_penalty:
-                    goal_reward = 2 * self.goal_reward
-                    hyp = np.sqrt(self.room_length**2 + self.room_width**2)
-                    dist_pen_scale = (goal_reward * 7/8) / hyp
-                    robot_reward += max(goal_reward - self.box_distances[box.idx] * dist_pen_scale, goal_reward/8)
-                else:
-                    robot_reward += self.goal_reward
+                robot_reward += self.goal_reward
 
-        if self.cfg.ablation.max_distance_reward and not self.cfg.ablation.sparse:
+        if self.cfg.ablation.max_distance_reward:
             robot_reward += self.partial_rewards_scale * sign_max_dist_moved * max_dist_moved
         for box in to_remove:
             self.space.remove(box.body, box)
@@ -730,21 +739,14 @@ class BoxDeliveryEnv(gym.Env):
         if self.cfg.ablation.step_dist_penalty:
             robot_reward -= (self.partial_rewards_scale / 8) * robot_distance
 
-        # terminal reward
-        if self.robot_cumulative_boxes == self.num_boxes:
-            robot_reward += self.cfg.ablation.terminal_reward
-        
-        # step penalty
-        robot_reward -= self.cfg.ablation.step_penalty
-        
         # penalty for hitting obstacles
-        if self.robot_hit_obstacle and not self.cfg.ablation.sparse:
+        if self.robot_hit_obstacle:
             robot_reward -= self.collision_penalty
         
         # penalty for small movements
         robot_heading = self.restrict_heading_range(self.robot.body.angle)
         robot_turn_angle = self.heading_difference(robot_initial_heading, robot_heading)
-        if robot_distance < NONMOVEMENT_DIST_THRESHOLD and abs(robot_turn_angle) < NONMOVEMENT_TURN_THRESHOLD and not self.cfg.ablation.sparse:
+        if robot_distance < NONMOVEMENT_DIST_THRESHOLD and abs(robot_turn_angle) < NONMOVEMENT_TURN_THRESHOLD:
             robot_reward -= self.non_movement_penalty
 
         ############################################################################################################
@@ -1383,12 +1385,6 @@ class BoxDeliveryEnv(gym.Env):
         final_point = path[:,-1]
     
         for i in range(1, path.shape[1] - 1):
-            if self.video and self.cfg.render.show:
-                current_pruned = torch.stack(pruned, dim=1).squeeze(0).cpu().numpy()
-                remaining_path = path[:, i:].squeeze(0).cpu().numpy()
-                full_path = np.concatenate([current_pruned, remaining_path], axis=0)
-                self.renderer.update_path(full_path)
-                self.render()
             dist_from_prev = torch.norm(path[:,i] - prev_point)
             dist_from_final = torch.norm(path[:,i] - final_point)
             if dist_from_prev >= min_dist and dist_from_final >= min_dist:
@@ -1438,10 +1434,6 @@ class BoxDeliveryEnv(gym.Env):
                 shortest_path = self.shortest_path(p1_pos, p2_pos)
                 # convert to tensor before adding
                 shortest_path = [torch.tensor([pos[0], pos[1]], dtype=torch.float32, device=device) for pos in shortest_path]
-                if self.video and self.cfg.render.show:
-                    for i in range(len(shortest_path)):
-                        self.renderer.update_path(np.concatenate([torch.stack(new_trajectory).cpu().numpy(), torch.stack(shortest_path[:i+1]).cpu().numpy(), trajectory[t:].cpu().numpy()], axis=0))
-                        self.render()
                 # avoid adding p1 again
                 new_trajectory.extend(shortest_path[1:])
             
@@ -1458,13 +1450,47 @@ class BoxDeliveryEnv(gym.Env):
     def closest_valid_cspace_thin_indices(self, i, j):
         return self.closest_cspace_thin_indices[:, i, j]
 
+    def display_goal_point(self):
+        """Add goal point as a visual-only pymunk circle"""
+        if hasattr(self, 'goal_point_shape') and self.goal_point_shape in self.space.shapes:
+            # If the goal point is already being displayed in the correct location, pass
+            if self.goal_point_shape.body.position == Vec2d(self.goal_point[0], self.goal_point[1]):
+                return
+            # Else, remove existing goal point visual and create a new one
+            self.space.remove(self.goal_point_body, self.goal_point_shape)
+        
+        # Create static body for goal point
+        self.goal_point_body = pymunk.Body(body_type=pymunk.Body.STATIC)
+        self.goal_point_body.position = self.goal_point
+        
+        # Create polygon approximation of circle (8-sided)
+        radius = 0.1
+        num_sides = 8
+        vertices = []
+        for i in range(num_sides):
+            angle = 2 * math.pi * i / num_sides
+            x = radius * math.cos(angle)
+            y = radius * math.sin(angle)
+            vertices.append((x, y))
+
+        self.goal_point_shape = pymunk.Poly(self.goal_point_body, vertices)
+        self.goal_point_shape.color = (0, 0, 0, 255)  # Black color
+        self.goal_point_shape.label = 'goal'
+        
+        # Make it non-interactive - no collisions
+        self.goal_point_shape.filter = pymunk.ShapeFilter(categories=0, mask=0)
+        self.goal_point_shape.sensor = True  # Sensor shapes don't generate collision responses
+        
+        # Add to space for rendering
+        self.space.add(self.goal_point_body, self.goal_point_shape)
+
     def render(self, mode='human', close=False):
         """Renders the environment."""
-        # if self.video:
         if True:
+            if self.goal_point is not None:
+                self.display_goal_point()
+
             self.renderer.render(save=False, manual_draw=True)
-            if self.video:
-                time.sleep(0.05)
             channel_names = ['Overhead Map', 'Robot Footprint', 'Shortest Path to Robot', 'Shortest Path to Receptacle']
 
             if self.cfg.render.show_obs and not self.low_dim_state and self.show_observation and self.observation is not None:

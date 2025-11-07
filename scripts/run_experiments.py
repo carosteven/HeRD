@@ -20,7 +20,7 @@ Usage:
 """
 
 import argparse
-from train_rl_policy import DDQNTrainer
+from scripts.train_rl_policy import DDQNTrainer
 from herd_policy import HeRDPolicy
 from submodules.BenchNPIN.benchnpin.common.metrics.base_metric import BaseMetric
 from submodules.BenchNPIN.benchnpin.common.utils.utils import DotDict
@@ -45,7 +45,6 @@ def main(cfg, job_id):
             cfg.agent.action_type = action_type
             cfg.train.job_type = policy_type
             cfg.env.obstacle_config = obs_config
-            cfg.ablation.better_pushing = push_config
             cfg.ablation.diffusion = diffusion_config
 
             policy = HeRDPolicy(cfg=cfg)
@@ -125,22 +124,10 @@ if __name__ == '__main__':
                 'goal_reward': 1.0,
             },
             'ablation': {
-                'half_action_space': False,
-                'terminal_reward': 10,
-                'step_penalty': 0,
                 'max_distance_reward': True,
-                'box_dist_penalty': False,
-                'box_dist_penalty_scale': 0.35,
                 'step_dist_penalty': True,
-                'sparse': False,
-                'per': True,
-                'per_alpha': 0.6,
-                'per_beta': 0.4,
-                'curriculum': False,
-                'better_pushing': True,
                 'general': False,
                 'diffusion': False,
-                'average_filter': False,
             },
             'diffusion': {
                 'model_name': 'herd_diffusion_model.ckpt',
