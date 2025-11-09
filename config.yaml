@@ -162,13 +162,13 @@ ablation:
   max_distance_reward: false
   step_dist_penalty: false
   general: false
-  diffusion: false
 
 rl_policy:
   model_path: models/rl_models
-  model_name: herd_rl_policy
+  model_name: training_test
 
 diffusion:
+  use_diffusion_policy: true
   horizon: 32
   action_dim: 2
   obs_dim: 26 # for combo

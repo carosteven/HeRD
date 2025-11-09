@@ -1,5 +1,5 @@
 """
-Experiment runner for HeRD (Human-Robot Delivery) navigation policies.
+Experiment runner for HeRD policies.
 
 This script provides a unified interface to:
 - Train RL policies with different configurations
@@ -18,6 +18,12 @@ Usage:
     # Run with inline configuration (see script for examples)
     python run_experiments.py --job_id exp_001
 """
+import sys
+import os
+# Add project root to Python path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 import argparse
 from scripts.train_rl_policy import DDQNTrainer
@@ -41,11 +47,9 @@ def main(cfg, job_id):
         benchmark_results = []
         num_eps = cfg.evaluate.num_eps
         model_path = cfg.evaluate.model_path
-        for policy_type, action_type, model_name, obs_config, push_config, diffusion_config in zip(cfg.evaluate.policy_types, cfg.evaluate.action_types, cfg.evaluate.model_names, cfg.evaluate.obs_configs, cfg.evaluate.push_configs, cfg.evaluate.diffusion_configs):
-            cfg.agent.action_type = action_type
-            cfg.train.job_type = policy_type
+        for model_name, obs_config, diffusion_config in zip(cfg.evaluate.model_names, cfg.evaluate.obs_configs, cfg.evaluate.diffusion_configs):
             cfg.env.obstacle_config = obs_config
-            cfg.ablation.diffusion = diffusion_config
+            cfg.diffusion.use_diffusion_policy = diffusion_config
 
             policy = HeRDPolicy(cfg=cfg)
             benchmark_results.append(policy.evaluate(num_eps=num_eps))
@@ -81,11 +85,8 @@ if __name__ == '__main__':
         # High level configuration for the box delivery task
         cfg={
             'render': {
-                'show': True,           # if true display the environment
+                'show': False,           # if true display the environment
                 'show_obs': False,       # if true show observation
-            },
-            'agent': {
-                'action_type': 'position', # 'position', 'heading', 'velocity'
             },
             'boxes': {
                 'num_boxes_small': 10,
@@ -98,30 +99,21 @@ if __name__ == '__main__':
                 'random_seed': 0,
             },
             'train': { 
-                'train_mode': False,
-                'job_type': 'sam', # 'sam', 'ppo', 'sac'
+                'train_mode': True,
+                'job_type': 'sam',
                 'job_name': 'diffusion_sam_sc',
                 'log_dir': 'per_logs/',
                 'resume_training': False,
                 'job_id_to_resume': '16398526',
                 'total_timesteps': 60000,
-                # 'exploration_timesteps': 6000*2,
             },
             'evaluate': {
-                'eval_mode': True,
+                'eval_mode': False,
                 'num_eps': 20,
-                'policy_types': ['sam', 'sam', 'sam', 'sam', 'sam'], # list of policy types to evaluate
-                'action_types': ['position', 'position', 'position', 'position'], # list of action types to evaluate
-                # 'model_names': ['newest_base_se2', 'newest_base_sc2', 'newest_base_lc2', 'newest_base_ld2'], # list of model names to evaluate
                 'model_names': ['diffusion_8sdp_general', 'ablation_diffusion_16sdp_general', 'ablation_diffusion_4sdp_general', 'ablation_diffusion_16sdp_general', 'ablation_diffusion_4sdp_general', 'ablation_diffusion_16sdp_general'], # list of model names to evaluate
                 'model_path': 'models/box_delivery/new_robot', # path to the models
                 'obs_configs': ['small_empty', 'small_empty', 'large_divider', 'large_divider', 'large_divider', 'large_divider'], # list of observation configurations
-                'push_configs': [False, False, False, False, False, False],
-                # 'diffusion_configs': [False, False, False, False],
                 'diffusion_configs': [True, True, True, True, True, True],
-            },
-            'rewards_sam': {
-                'goal_reward': 1.0,
             },
             'ablation': {
                 'max_distance_reward': True,
@@ -130,6 +122,7 @@ if __name__ == '__main__':
                 'diffusion': False,
             },
             'diffusion': {
+                'use_diffusion_policy': False,
                 'model_name': 'herd_diffusion_model.ckpt',
                 'obs_dim': 26, # for combo
                 'obs_type': 'combo', # 'positions' or 'vertices'

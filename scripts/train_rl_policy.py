@@ -221,7 +221,7 @@ class DDQNTrainer():
         train_summary_writer = SummaryWriter(log_dir=os.path.join(log_dir, f'_new_{self.model_name}'))
         meters = Meters()
 
-        state, _ = policy.env.reset()
+        state, info = policy.env.reset()
         total_timesteps_with_warmup = total_timesteps + learning_starts
         for timestep in tqdm(range(start_timestep, total_timesteps_with_warmup),
                              initial=start_timestep, total=total_timesteps_with_warmup, file=sys.stdout):

@@ -4,6 +4,8 @@ scratch/
 
 data/
 demonstration_data/
+*/checkpoint/
+*.log
 
 /plots
 

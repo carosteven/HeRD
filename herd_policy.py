@@ -35,7 +35,7 @@ def get_latest_model(model_dir, model_name):
 
 
 class HeRDPolicy():
-    def __init__(self, cfg):
+    def __init__(self, cfg, job_id=None):
         self.env = BoxDeliveryEnv(cfg)
         self.env.reset()
         self.cfg = self.env.cfg # update cfg with env-specific config
@@ -43,17 +43,20 @@ class HeRDPolicy():
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.device = torch.device('mps' if torch.backends.mps.is_available() else self.device)
 
+        self.job_id = job_id
+
         # RL Policy
         self.rl_policy = self.create_rl_policy()
         self.position_controller = self.env.position_controller
 
         # Diffusion Policy
-        self.diffusion_policy = self.create_diffusion_policy()
-        self.obs_buffer = collections.deque(maxlen=self.cfg.diffusion.n_obs_steps)
+        if self.cfg.diffusion.use_diffusion_policy:
+            self.diffusion_policy = self.create_diffusion_policy()
+            self.obs_buffer = collections.deque(maxlen=self.cfg.diffusion.n_obs_steps)
 
     
     def create_rl_policy(self):
-        action_space = gym.spaces.Box(low=0, high=self.cfg.env.local_map_pixel_width * self.cfg.env.local_map_pixel_width, dtype=np.float32)
+        # action_space = gym.spaces.Box(low=0, high=self.cfg.env.local_map_pixel_width * self.cfg.env.local_map_pixel_width, dtype=np.float32)
         num_channels = 4
         model_path = self.cfg.rl_policy.model_path
         model_name = self.cfg.rl_policy.model_name
@@ -63,9 +66,10 @@ class HeRDPolicy():
             train = True
             evaluate = False
             final_exploration = self.cfg.train.final_exploration
-            checkpoint_path = self.cfg.train.checkpoint_path
             resume_training = self.cfg.train.resume_training
             job_id_to_resume = self.cfg.train.job_id_to_resume
+
+            checkpoint_path = os.path.join(os.path.dirname(__file__), f'checkpoint/{self.job_id}/checkpoint-{model_name}.pt')
             # If models already exists in the checkpoint directory, use the latest model
             if resume_training:
                 checkpoint_dir = os.path.join(os.path.dirname(__file__), f'checkpoint/{job_id_to_resume}/')
@@ -78,11 +82,11 @@ class HeRDPolicy():
             train = False
             evaluate = True
             final_exploration = self.cfg.evaluate.final_exploration
-            checkpoint_path = ''
             resume_training = False
             job_id_to_resume = None
+            checkpoint_path = ''
 
-        policy = DenseActionSpacePolicy(action_space,
+        policy = DenseActionSpacePolicy(self.env.action_space.high,
                                         num_channels,
                                         final_exploration=final_exploration,
                                         train=train,
@@ -296,24 +300,25 @@ class HeRDPolicy():
         spatial_action, _ = self.rl_policy.predict(rl_obs, exploration_eps=exploration_eps)
         path, _ = self.position_controller.get_waypoints_to_spatial_action(robot_pose[0:2], robot_pose[2], spatial_action)
 
-        box_in_path, _ = self.check_path_for_box_collision(path, box_obs)
+        if self.cfg.diffusion.use_diffusion_policy:
+            box_in_path, _ = self.check_path_for_box_collision(path, box_obs)
 
-        if not box_in_path:
-            target_pos = np.array(path[-1][0:2], dtype=np.float32)
-            diff_obs = np.concatenate([diff_obs, target_pos], axis=-1)
+            if not box_in_path:
+                target_pos = np.array(path[-1][0:2], dtype=np.float32)
+                diff_obs = np.concatenate([diff_obs, target_pos], axis=-1)
 
-            # Condition trajectory by inpainting
-            cond = [torch.tensor(robot_pose[0:2]), torch.from_numpy(target_pos)]
+                # Condition trajectory by inpainting
+                cond = [torch.tensor(robot_pose[0:2]), torch.from_numpy(target_pos)]
 
-            # Shape: [1, n_obs_steps=1, obs_dim]
-            obs_tensor = torch.from_numpy(np.array(diff_obs)[np.newaxis, np.newaxis, ...]).float().to(self.device)
-            obs_dict = {'obs': obs_tensor}
+                # Shape: [1, n_obs_steps=1, obs_dim]
+                obs_tensor = torch.from_numpy(np.array(diff_obs)[np.newaxis, np.newaxis, ...]).float().to(self.device)
+                obs_dict = {'obs': obs_tensor}
 
-            with torch.no_grad():
-                action_dict = self.diffusion_policy.predict_action(obs_dict, cond=cond)
-            path = action_dict['action'].cpu().numpy()
-            path = path.reshape(-1, 2)
-            path = self.get_path_headings(path)
+                with torch.no_grad():
+                    action_dict = self.diffusion_policy.predict_action(obs_dict, cond=cond)
+                path = action_dict['action'].cpu().numpy()
+                path = path.reshape(-1, 2)
+                path = self.get_path_headings(path)
 
         if exploration_eps is not None:
             # when training rl policy, spatial action needs to be recorded in the replay buffer
