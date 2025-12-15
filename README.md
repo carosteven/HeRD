@@ -89,7 +89,14 @@ python scripts/run_experiments.py
 ```
 
 #### 2. Train Diffusion Policy
+The diffusion policy is trained from demonstration data. Download sample demonstration data [from here](https://drive.google.com/drive/folders/1zEC1cGMKbA0MK3FadHyeTwx8H_K61ELw?usp=sharing), or create new demonstrations:
 ```bash
-python train_diffusion_policy.py --task boxdelivery_lowdim --exp_name diffusion_train_001
+python scripts/demonstration_collection.py
+```
+
+Specify the location of the demonstration data in `submodules/diffusionPolicy/diffusionPolicy/config/task/boxdelivery_lowdim.yaml`. Set `dataset.zarr_path` to the correct location. Train the diffusion policy by running:
+
+```bash
+python submodules/diffusionPolicy/diffusionPolicy/train.py --config-name=train_diffusion_unet_lowdim_workspace
 ```
 

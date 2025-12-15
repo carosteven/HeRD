@@ -3,7 +3,6 @@ logs/
 scratch/
 
 data/
-demonstration_data/
 */checkpoint/
 *.log
 
@@ -32,4 +31,5 @@ events.out*
 .DS_Store
 *.pt
 *.ckpt
+*.zarr
 Results
