@@ -96,35 +96,33 @@ if __name__ == '__main__':
                 'random_seed': 42,
             },
             'rl_policy': {
-                'model_path': 'models/rl_models/old_robot',
+                'model_path': 'models/rl_models',
             },
             'train': { 
                 'train_mode': False,
-                'job_type': 'sam',
                 'job_name': 'diffusion_sam_sc',
                 'log_dir': 'logs/',
                 'resume_training': False,
                 'job_id_to_resume': '',
                 'total_timesteps': 60000,
+                'random_env': True,
             },
             'evaluate': {
                 'eval_mode': True,
                 'num_eps': 20,
                 'obs_configs': ['small_empty', 'small_columns', 'large_columns', 'large_divider'], # list of observation configurations
-                'model_names': ['base_se', 'base_sc', 'base_lc', 'base_ld'], # list of model names to evaluate
-                'diffusion_configs': [False, False, False, False],
+                'model_names': ['herd_rl_policy', 'herd_rl_policy', 'herd_rl_policy', 'herd_rl_policy'], # list of model names to evaluate
+                'diffusion_configs': [True, True, True, True],
             },
-            'ablation': {
+            'rewards': {
                 'max_distance_reward': True,
                 'step_dist_penalty': True,
-                'general': False,
-                'diffusion': False,
             },
             'diffusion': {
                 'use_diffusion_policy': False,
                 'model_name': 'herd_diffusion_model.ckpt',
                 'obs_dim': 26, # for combo
-                'obs_type': 'combo', # 'positions' or 'vertices'
+                'obs_type': 'combo', # 'positions', 'vertices', or 'combo'
             }
             
         }

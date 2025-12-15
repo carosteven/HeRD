@@ -246,7 +246,7 @@ class DDQNTrainer():
             # reset if episode ended
             if done:
                 obs_config = None
-                if self.cfg.ablation.general:
+                if self.cfg.train.random_env:
                     obs_config = random.choice(['large_columns', 'large_divider'])
                 state, _ = policy.env.reset(obs_config = obs_config)
                 episode += 1

@@ -32,5 +32,4 @@ events.out*
 .DS_Store
 *.pt
 *.ckpt
-*.png
 Results

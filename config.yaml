@@ -123,10 +123,11 @@ rewards:
   goal_reward: 1.0
   collision_penalty: 0.25
   non_movement_penalty: 0.25
+  max_distance_reward: false
+  step_dist_penalty: false
 
 train:
   train_mode: false
-  job_type: 'sam'
   job_name: 'sam_model'
   batch_size: 32
   checkpoint_freq: 6000
@@ -140,11 +141,11 @@ train:
   n_epochs: 10
   n_steps: 256
   output_log_dir: 'output_logs/'
+  random_env: False
   replay_buffer_size: 10000
   resume_training: false
   target_update_freq: 1000
   total_timesteps: 60000
-  use_correct_direction_reward: false
   verbose: 2
   weight_decay: 0.0001
 
@@ -157,11 +158,6 @@ evaluate:
   action_types: ['heading', 'heading', 'position']  # list of action types to evaluate
   models: ['ppo_small_empty', 'sac_small_empty', 'sam_small_empty']  # list of model names to evaluate
   obs_configs: ['small_empty', 'small_empty', 'small_empty']  # list of obstacle configurations to evaluate
-
-ablation:
-  max_distance_reward: false
-  step_dist_penalty: false
-  general: false
 
 rl_policy:
   model_path: models/rl_models

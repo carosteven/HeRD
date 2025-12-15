@@ -717,7 +717,7 @@ class BoxDeliveryEnv(gym.Env):
                 sign_max_dist_moved = np.sign(dist_moved)
             boxes_distance += abs(dist_moved)
             self.box_distances[box.idx] += abs(dist_moved)
-            if not self.cfg.ablation.max_distance_reward:
+            if not self.cfg.rewards.max_distance_reward:
                 robot_reward += self.partial_rewards_scale * dist_moved
 
             # reward for boxes in receptacle
@@ -729,14 +729,14 @@ class BoxDeliveryEnv(gym.Env):
                 robot_boxes += 1
                 robot_reward += self.goal_reward
 
-        if self.cfg.ablation.max_distance_reward:
+        if self.cfg.rewards.max_distance_reward:
             robot_reward += self.partial_rewards_scale * sign_max_dist_moved * max_dist_moved
         for box in to_remove:
             self.space.remove(box.body, box)
             self.boxes.remove(box)
 
         # step distance penalty
-        if self.cfg.ablation.step_dist_penalty:
+        if self.cfg.rewards.step_dist_penalty:
             robot_reward -= (self.partial_rewards_scale / 8) * robot_distance
 
         # penalty for hitting obstacles
