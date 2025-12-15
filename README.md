@@ -66,7 +66,7 @@ Download the models to `models/diffusion_models/` and `models/rl_models/` as nec
 
 
 ### Evaluating
-In `scripts/run_experiments.py` ensure `show=True`, `train.train_mode=False`, `evaulate.eval_mode=True`.
+In `scripts/run_experiments.py` ensure `show=True`, `train.train_mode=False`, `evaluate.eval_mode=True`.
 
 For each trial you wish to run, ensure you specify the environment type, RL model name, and whether to use the diffusion model from the lists `obs_configs`, `model_names`, and `diffusion_configs` in the `evaluation` settings.
 
@@ -77,7 +77,7 @@ python scripts/run_experiments.py
 
 ### Training Components
 #### 1. Train RL Policy
-In `scripts/run_experiments.py` ensure `train.train_mode=True`, and `evaulate.eval_mode=False`. We also suggest setting `show=False` for performance.
+In `scripts/run_experiments.py` ensure `train.train_mode=True`, and `evaluate.eval_mode=False`. We also suggest setting `show=False` for performance.
 
 In the `train` settings, specify the `job_name`, and training timesteps `total_timesteps`. To train a RL policy that can generalize to all of the environment, we recommend `train.random_env=True`, which randomly chooses between `large_columns` and `large_divider` environments while training. To train in a specific environment, ensure `random_env=False` and specify the environment using `env.obstacle_config`.
 
