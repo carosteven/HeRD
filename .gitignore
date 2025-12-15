@@ -10,7 +10,6 @@ demonstration_data/
 /plots
 
 /model_checkpoints
-models/
 
 __pycache__/
 
@@ -32,5 +31,6 @@ events.out*
 *.zip
 .DS_Store
 *.pt
+*.ckpt
 *.png
 Results

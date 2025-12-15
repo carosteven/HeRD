@@ -976,9 +976,10 @@ class BoxDeliveryEnv(gym.Env):
             robot_position = list(robot_position)
             prev_heading_diff = heading_diff
 
-            # stop moving if robot collided with obstacle
-            # if self.distance(robot_prev_waypoint_position, robot_position) > MOVE_STEP_SIZE:
-            if self.distance(robot_prev_position, robot_position) < MOVE_STEP_SIZE / 50 and done_turning:
+            # stop moving if robot collided with obstacle (stricter when not using diffusion for training rl policy)
+            if ((self.distance(robot_prev_waypoint_position, robot_position) > MOVE_STEP_SIZE and not self.cfg.diffusion.use_diffusion_policy) 
+                or (self.distance(robot_prev_position, robot_position) < MOVE_STEP_SIZE / 50 and done_turning)):
+
                 if self.robot_hit_obstacle:
                     self.path_completed = True
                     robot_is_moving = False
@@ -1155,12 +1156,9 @@ class BoxDeliveryEnv(gym.Env):
         channels = []
         channels.append(self.get_local_map(self.global_overhead_map, self.robot.body.position, self.robot.body.angle))
         channels.append(self.robot_state_channel)
-        channels.append(self.get_local_distance_map(self.create_global_shortest_path_map(self.robot.body.position), self.robot.body.position, self.robot.body.angle))
+        # channels.append(self.get_local_distance_map(self.create_global_shortest_path_map(self.robot.body.position), self.robot.body.position, self.robot.body.angle))
         channels.append(self.get_local_distance_map(self.create_global_shortest_path_to_receptacle_map(), self.robot.body.position, self.robot.body.angle))
-        # channels.append(self.global_overhead_map)
-        # channels.append(self.global_overhead_map)
-        # channels.append(self.global_overhead_map)
-        # channels.append(self.global_overhead_map)
+        channels.append(self.get_local_distance_map(self.create_global_shortest_path_map(self.robot.body.position), self.robot.body.position, self.robot.body.angle))
         observation = np.stack(channels, axis=2)
         observation = (observation * 255).astype(np.uint8)
         return observation
@@ -1493,7 +1491,7 @@ class BoxDeliveryEnv(gym.Env):
             self.renderer.render(save=False, manual_draw=True)
             channel_names = ['Overhead Map', 'Robot Footprint', 'Shortest Path to Robot', 'Shortest Path to Receptacle']
 
-            if self.cfg.render.show_obs and not self.low_dim_state and self.show_observation and self.observation is not None:
+            if self.cfg.render.show_obs and self.show_observation and self.observation is not None:
                 self.show_observation = False
                 for ax, i in zip(self.state_ax, range(self.num_channels)):
                     ax.clear()

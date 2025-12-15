@@ -47,7 +47,6 @@ class HeRDPolicy():
 
         # RL Policy
         self.rl_policy = self.create_rl_policy()
-        self.position_controller = self.env.position_controller
 
         # Diffusion Policy
         if self.cfg.diffusion.use_diffusion_policy:
@@ -298,7 +297,7 @@ class HeRDPolicy():
 
     def act(self, rl_obs, diff_obs, box_obs, robot_pose, exploration_eps=None):
         spatial_action, _ = self.rl_policy.predict(rl_obs, exploration_eps=exploration_eps)
-        path, _ = self.position_controller.get_waypoints_to_spatial_action(robot_pose[0:2], robot_pose[2], spatial_action)
+        path, _ = self.env.position_controller.get_waypoints_to_spatial_action(robot_pose[0:2], robot_pose[2], spatial_action)
 
         if self.cfg.diffusion.use_diffusion_policy:
             box_in_path, _ = self.check_path_for_box_collision(path, box_obs)

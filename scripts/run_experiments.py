@@ -44,17 +44,14 @@ def main(cfg, job_id):
         trainer.train()
     
     if cfg.evaluate.eval_mode:
-        benchmark_results = []
         num_eps = cfg.evaluate.num_eps
-        model_path = cfg.evaluate.model_path
         for model_name, obs_config, diffusion_config in zip(cfg.evaluate.model_names, cfg.evaluate.obs_configs, cfg.evaluate.diffusion_configs):
+            cfg.rl_policy.model_name = model_name
             cfg.env.obstacle_config = obs_config
             cfg.diffusion.use_diffusion_policy = diffusion_config
 
             policy = HeRDPolicy(cfg=cfg)
-            benchmark_results.append(policy.evaluate(num_eps=num_eps))
-
-        BaseMetric.plot_algs_scores(benchmark_results, save_fig_dir='./', plot_success=True)
+            policy.evaluate(num_eps=num_eps)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
@@ -96,24 +93,26 @@ if __name__ == '__main__':
                 'obstacle_config': 'small_columns', # options are small_empty, small_columns, large_columns, large_divider
             },
             'misc': {
-                'random_seed': 0,
+                'random_seed': 42,
+            },
+            'rl_policy': {
+                'model_path': 'models/rl_models/old_robot',
             },
             'train': { 
-                'train_mode': True,
+                'train_mode': False,
                 'job_type': 'sam',
                 'job_name': 'diffusion_sam_sc',
-                'log_dir': 'per_logs/',
+                'log_dir': 'logs/',
                 'resume_training': False,
-                'job_id_to_resume': '16398526',
+                'job_id_to_resume': '',
                 'total_timesteps': 60000,
             },
             'evaluate': {
-                'eval_mode': False,
+                'eval_mode': True,
                 'num_eps': 20,
-                'model_names': ['diffusion_8sdp_general', 'ablation_diffusion_16sdp_general', 'ablation_diffusion_4sdp_general', 'ablation_diffusion_16sdp_general', 'ablation_diffusion_4sdp_general', 'ablation_diffusion_16sdp_general'], # list of model names to evaluate
-                'model_path': 'models/box_delivery/new_robot', # path to the models
-                'obs_configs': ['small_empty', 'small_empty', 'large_divider', 'large_divider', 'large_divider', 'large_divider'], # list of observation configurations
-                'diffusion_configs': [True, True, True, True, True, True],
+                'obs_configs': ['small_empty', 'small_columns', 'large_columns', 'large_divider'], # list of observation configurations
+                'model_names': ['base_se', 'base_sc', 'base_lc', 'base_ld'], # list of model names to evaluate
+                'diffusion_configs': [False, False, False, False],
             },
             'ablation': {
                 'max_distance_reward': True,
