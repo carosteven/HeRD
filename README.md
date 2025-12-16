@@ -79,7 +79,7 @@ python scripts/run_experiments.py
 #### 1. Train RL Policy
 In `scripts/run_experiments.py` ensure `train.train_mode=True`, and `evaluate.eval_mode=False`. We also suggest setting `show=False` for performance.
 
-In the `train` settings, specify the `job_name`, and training timesteps `total_timesteps`. To train a RL policy that can generalize to all of the environment, we recommend `train.random_env=True`, which randomly chooses between `large_columns` and `large_divider` environments while training. To train in a specific environment, ensure `random_env=False` and specify the environment using `env.obstacle_config`.
+In the `train` settings, specify the `job_name`, and training timesteps `total_timesteps`. To train a RL policy that can generalize to all the environments, we recommend `train.random_env=True`, which randomly chooses between `large_columns` and `large_divider` environments while training. To train in a specific environment, ensure `random_env=False` and specify the environment using `env.obstacle_config`.
 
 To train a RL policy with a pretrained diffusion policy, set `diffusion.use_diffusion_policy=True` and specify the model name of the diffusion policy `diffusion.model_name`.
 

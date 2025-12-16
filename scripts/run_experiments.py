@@ -82,7 +82,7 @@ if __name__ == '__main__':
         # High level configuration for the box delivery task
         cfg={
             'render': {
-                'show': False,           # if true display the environment
+                'show': True,           # if true display the environment
                 'show_obs': False,       # if true show observation
             },
             'boxes': {
