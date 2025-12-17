@@ -5,18 +5,6 @@ This script provides a unified interface to:
 - Train RL policies with different configurations
 - Evaluate trained policies across multiple environments
 - Benchmark and compare different policy approaches
-- Generate performance comparison plots
-- Handle experiment configuration via files or inline parameters
-
-Usage:
-    # Train a new policy
-    python run_experiments.py --config configs/train_config.yaml --job_id exp_001
-    
-    # Evaluate existing policies
-    python run_experiments.py --config configs/eval_config.yaml
-    
-    # Run with inline configuration (see script for examples)
-    python run_experiments.py --job_id exp_001
 """
 import sys
 import os
@@ -93,7 +81,7 @@ if __name__ == '__main__':
                 'obstacle_config': 'small_columns', # options are small_empty, small_columns, large_columns, large_divider
             },
             'misc': {
-                'random_seed': 42,
+                'random_seed': 1,
             },
             'rl_policy': {
                 'model_path': 'models/rl_models',

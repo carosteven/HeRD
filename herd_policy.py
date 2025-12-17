@@ -55,7 +55,6 @@ class HeRDPolicy():
 
     
     def create_rl_policy(self):
-        # action_space = gym.spaces.Box(low=0, high=self.cfg.env.local_map_pixel_width * self.cfg.env.local_map_pixel_width, dtype=np.float32)
         num_channels = 4
         model_path = self.cfg.rl_policy.model_path
         model_name = self.cfg.rl_policy.model_name
@@ -302,7 +301,7 @@ class HeRDPolicy():
         if self.cfg.diffusion.use_diffusion_policy:
             box_in_path, _ = self.check_path_for_box_collision(path, box_obs)
 
-            if not box_in_path:
+            if box_in_path is None:
                 target_pos = np.array(path[-1][0:2], dtype=np.float32)
                 diff_obs = np.concatenate([diff_obs, target_pos], axis=-1)
 
@@ -319,10 +318,8 @@ class HeRDPolicy():
                 path = path.reshape(-1, 2)
                 path = self.get_path_headings(path)
 
-        if exploration_eps is not None:
-            # when training rl policy, spatial action needs to be recorded in the replay buffer
-            return path, spatial_action
-        return path
+        # when training rl policy, spatial action needs to be recorded in the replay buffer
+        return path, spatial_action
     
 
     def evaluate(self, num_eps):
@@ -339,7 +336,7 @@ class HeRDPolicy():
             ep_reward = 0.0
             while True:
                 ep_steps += 1
-                path = self.act(rl_obs, info['obs_combo'], info['box_obs'], info['robot_pose'])
+                path, _ = self.act(rl_obs, info['obs_combo'], info['box_obs'], info['robot_pose'])
                 rl_obs, reward, done, truncated, info = self.env.step(path)
                 ep_reward += reward
                 if done or truncated:

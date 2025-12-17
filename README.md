@@ -31,7 +31,7 @@ git submodule update --init --recursive
 ```
 
 ### 2. (Optional) Create a Python environment
-We recommend using Python $\geq$ 3.11
+We recommend using Python == 3.11, but have also successfully tested with 3.12.
 ```bash
 cd HeRD
 python -m venv venv

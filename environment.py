@@ -187,8 +187,6 @@ class BoxDeliveryEnv(gym.Env):
                 self.state_plot.ion()  # Interactive mode on     
 
         self.box_distances = {}   
-        self.path_completed = True # used for diffusion TODO: check if I can remove
-        self.target_position = None # used for diffusion TODO: check if I can remove
         self.demonstration_episode = None
         
 
@@ -677,7 +675,7 @@ class BoxDeliveryEnv(gym.Env):
                 self.render()
             else:
                 self.path, robot_move_sign = self.position_controller.get_waypoints_to_spatial_action(robot_initial_position, robot_initial_heading, action)
-                robot_distance, robot_turn_angle, self.demonstration_episode = self.execute_robot_path(robot_initial_position, robot_initial_heading, robot_move_sign, action=action, demo_mode=True)
+                robot_distance, robot_turn_angle, self.demonstration_episode = self.execute_robot_path(robot_initial_position, robot_initial_heading, path, action=action, demo_mode=True)
 
             # get new robot pose
             robot_position, robot_heading = self.robot.body.position, self.restrict_heading_range(self.robot.body.angle)
@@ -926,7 +924,6 @@ class BoxDeliveryEnv(gym.Env):
         robot_waypoint_headings = [waypoint[2] for waypoint in path]
 
         robot_prev_waypoint_position = robot_waypoint_positions[robot_waypoint_index - 1]
-        robot_waypoint_position = robot_waypoint_positions[robot_waypoint_index]
         robot_waypoint_heading = robot_waypoint_headings[robot_waypoint_index]
 
         sim_steps = 0
@@ -981,7 +978,6 @@ class BoxDeliveryEnv(gym.Env):
                 or (self.distance(robot_prev_position, robot_position) < MOVE_STEP_SIZE / 50 and done_turning)):
 
                 if self.robot_hit_obstacle:
-                    self.path_completed = True
                     robot_is_moving = False
                     robot_distance += self.distance(robot_prev_waypoint_position, robot_position) 
                     break
@@ -1156,9 +1152,8 @@ class BoxDeliveryEnv(gym.Env):
         channels = []
         channels.append(self.get_local_map(self.global_overhead_map, self.robot.body.position, self.robot.body.angle))
         channels.append(self.robot_state_channel)
-        # channels.append(self.get_local_distance_map(self.create_global_shortest_path_map(self.robot.body.position), self.robot.body.position, self.robot.body.angle))
-        channels.append(self.get_local_distance_map(self.create_global_shortest_path_to_receptacle_map(), self.robot.body.position, self.robot.body.angle))
         channels.append(self.get_local_distance_map(self.create_global_shortest_path_map(self.robot.body.position), self.robot.body.position, self.robot.body.angle))
+        channels.append(self.get_local_distance_map(self.create_global_shortest_path_to_receptacle_map(), self.robot.body.position, self.robot.body.angle))
         observation = np.stack(channels, axis=2)
         observation = (observation * 255).astype(np.uint8)
         return observation
@@ -1371,75 +1366,6 @@ class BoxDeliveryEnv(gym.Env):
         path = self.shortest_path(source_position, target_position, configuration_space=configuration_space)
         return sum(self.distance(path[i - 1], path[i]) for i in range(1, len(path)))
     
-    def prune_by_distance(self, path, min_dist=WAYPOINT_MOVING_THRESHOLD/2):
-        """
-        Only used for diffusion policy.
-        Remove waypoints that are too close together
-        """
-        
-        # Always include start and end points
-        pruned = [path[:,0]]
-        prev_point = path[:,0]
-        final_point = path[:,-1]
-    
-        for i in range(1, path.shape[1] - 1):
-            dist_from_prev = torch.norm(path[:,i] - prev_point)
-            dist_from_final = torch.norm(path[:,i] - final_point)
-            if dist_from_prev >= min_dist and dist_from_final >= min_dist:
-                pruned.append(path[:,i])
-                prev_point = path[:,i]
-
-        pruned.append(path[:,-1]) # goal is always included
-        pruned = torch.stack(pruned, dim=1)
-        return pruned
-
-    def ensure_valid_trajectory(self, trajectory, path_feasibility=False):
-        """Could be renamed ensure_waypoint_feasibility"""
-        trajectory = trajectory.squeeze(0)
-        device = trajectory.device
-        # always include first point
-        new_trajectory = [trajectory[0]]
-        is_last_point = False
-
-        for t in range(1, trajectory.shape[0]):
-            p1 = new_trajectory[-1]
-            p2 = trajectory[t]
-
-            p1_pos = (p1[0].item(), p1[1].item())
-            p2_pos = (p2[0].item(), p2[1].item())
-
-            # always include last point
-            if t == trajectory.shape[0] - 1:
-                is_last_point = True
-
-            # check if the segment between p1 and p2 is valid
-            source_i, source_j = self.position_to_pixel_indices(p1_pos[0], p1_pos[1], self.configuration_space.shape)
-            target_i, target_j = self.position_to_pixel_indices(p2_pos[0], p2_pos[1], self.configuration_space.shape)
-            rr, cc = line(source_i, source_j, target_i, target_j)
-            if (1 - self.configuration_space_thin[rr, cc]).sum() == 0:
-                # no obstacle in the way, continue
-                new_trajectory.append(p2)
-                continue
-            elif not is_last_point and not path_feasibility: # we don't want to modify the last point
-                # find closest valid indices in configuration space
-                closest_indices = self.closest_valid_cspace_indices(target_i, target_j)
-                # convert back to position
-                p2_pos = self.pixel_indices_to_position(closest_indices[0], closest_indices[1], self.configuration_space.shape) 
-                p2_feas = torch.tensor([p2_pos[0], p2_pos[1]], dtype=torch.float32, device=device)
-                new_trajectory.append(p2_feas)
-
-            if path_feasibility:
-                shortest_path = self.shortest_path(p1_pos, p2_pos)
-                # convert to tensor before adding
-                shortest_path = [torch.tensor([pos[0], pos[1]], dtype=torch.float32, device=device) for pos in shortest_path]
-                # avoid adding p1 again
-                new_trajectory.extend(shortest_path[1:])
-            
-            elif is_last_point:
-                new_trajectory.append(p2)
-        
-        new_trajectory = torch.stack(new_trajectory, dim=0).unsqueeze(0)
-        return new_trajectory
 
 
     def closest_valid_cspace_indices(self, i, j):
