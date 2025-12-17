@@ -1,0 +1,5 @@
+setuptools<=80.0.0
+
+-e ./submodules/BenchNPIN
+-e ./submodules/spfa  
+-e ./submodules/diffusionPolicy

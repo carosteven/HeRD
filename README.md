@@ -35,26 +35,14 @@ We recommend using Python == 3.11, but have also successfully tested with 3.12.
 ```bash
 cd HeRD
 python -m venv venv
-source venv/bin/activate
+source venv/bin/activate # On Windows: venv\Scripts\activate
 ```
 
 ### 3. Install submodules and dependencies
-All dependencies are contained in the submodules, so no ```requirements.txt``` is needed.
+All dependencies are managed through `requirements.txt`, which includes the submodules as editable installs:
 
-Simply run:
 ```bash
-bash scripts/setup_submodules.sh
-```
-This will:
-1. Initialize and update all submodules
-2. Install each one with all dependencies
-
-If you prefer to do it manually:
-```bash
-git submodule update --init --recursive
-pip install -e submodules/BenchNPIN
-pip install -e submodules/spfa
-pip install -e submodules/diffusionPolicy
+pip install -r requirements.txt
 ```
 
 ---
