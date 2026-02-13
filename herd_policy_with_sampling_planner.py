@@ -48,8 +48,12 @@ class HeRDPolicyWithSamplingPlanner(HeRDPolicy):
                 goal_sample_rate=0.15,
                 rewire_radius_factor=2.0,
                 collision_check_resolution=0.05,
-                box_radius=0.1,
-                verbose=False
+                box_radius=0.22,
+                verbose=False,
+                # Ensure RRT outputs go through the same feasibility conditioning
+                condition_trajectory=True,
+                conditioning_functions=[self.ensure_waypoint_feasibility, self.prune_by_distance, self.ensure_path_feasibility],
+                robot_radius=0.66
             )
             # Don't need obs buffer for sampling planner
             if hasattr(self, 'obs_buffer'):
@@ -112,21 +116,23 @@ class HeRDPolicyWithSamplingPlanner(HeRDPolicy):
                         'robot_pos': np.array([robot_pj, robot_pi], dtype=np.float64),
                         'goal_pos': np.array([goal_pj, goal_pi], dtype=np.float64),
                         'box_positions': box_positions_grid,
-                        'receptacle_pos': np.array([receptacle_pj, receptacle_pi], dtype=np.float64)
+                        'receptacle_pos': np.array([receptacle_pj, receptacle_pi], dtype=np.float64),
+                        'pixel_indices_to_position': self.env.pixel_indices_to_position,
                     }
                     
                     # Get waypoints from sampling planner
                     action_dict = self.diffusion_policy.predict_action(obs_dict)
-                    waypoints_grid = action_dict['action'].numpy()[0]  # Shape: (horizon, 2)
+                    # waypoints_grid = action_dict['action'].numpy()[0]  # Shape: (horizon, 2)
+                    path = action_dict['action'].numpy()[0]  # Shape: (horizon, 2)
                     
                     # Convert waypoints from grid indices back to world coordinates
-                    path = []
-                    for wp_grid in waypoints_grid:
-                        # wp_grid is [j, i] (x, y) in grid coordinates
-                        j = int(np.clip(wp_grid[0], 0, grid.shape[1] - 1))
-                        i = int(np.clip(wp_grid[1], 0, grid.shape[0] - 1))
-                        wp_world = self.env.pixel_indices_to_position(i, j, grid.shape)
-                        path.append(wp_world)
+                    # path = []
+                    # for wp_grid in waypoints_grid:
+                    #     # wp_grid is [j, i] (x, y) in grid coordinates
+                    #     j = int(np.clip(wp_grid[0], 0, grid.shape[1] - 1))
+                    #     i = int(np.clip(wp_grid[1], 0, grid.shape[0] - 1))
+                    #     wp_world = self.env.pixel_indices_to_position(i, j, grid.shape)
+                    #     path.append(wp_world)
                     
                     path = np.array(path)
                     path = self.get_path_headings(path)

@@ -11,56 +11,29 @@ with a sophisticated cost function that:
 Author: Implemented for HeRD robotic manipulation baseline
 """
 
-from typing import Dict, Optional, Tuple, List
 import numpy as np
-import torch
 from scipy.spatial import KDTree
-from scipy.ndimage import distance_transform_edt
+from typing import List, Tuple, Optional, Callable
+import time
+from scipy.ndimage import binary_dilation
 
-try:
-    from diffusionPolicy.base_lowdim_policy import BaseLowdimPolicy
-except Exception:
-    class BaseLowdimPolicy:
-        def predict_action(self, obs_dict: Dict[str, torch.Tensor], cond=None) -> Dict[str, torch.Tensor]:
-            raise NotImplementedError()
+class RRTNode:
+    """Node in the RRT* tree."""
+    def __init__(self, pos: np.ndarray, parent: Optional['RRTNode'] = None, cost: float = 0.0):
+        self.pos = pos  # (x, y)
+        self.parent = parent
+        self.cost = cost
+        self.children: List['RRTNode'] = []
 
-
-class SamplingPushingPlanner(BaseLowdimPolicy):
+class SamplingPushingPlanner:
     """
-    RRT*-based planner with box-aware cost function for pushing tasks.
+    RRT* planner with box-aware cost function (Deviation Heuristic).
     
-    The planner treats movable boxes as opportunities for advantageous pushes
-    rather than static obstacles. A push is advantageous if it moves the box
-    towards the receptacle (positive cosine similarity), and costly if it
-    moves away (negative similarity).
-    
-    Usage:
-        planner = SamplingPushingPlanner(
-            horizon=32,
-            max_iterations=5000,
-            step_size=0.15,
-            goal_sample_rate=0.15,
-            rewire_radius_factor=2.0
-        )
-        
-        obs_dict = {
-            'grid': obstacle_map,  # (H, W) occupancy grid
-            'robot_pos': np.array([x, y]),
-            'goal_pos': np.array([gx, gy]),
-            'box_positions': [np.array([bx1, by1]), ...],
-            'receptacle_pos': np.array([rx, ry])
-        }
-        
-        result = planner.predict_action(obs_dict)
-        waypoints = result['action']  # shape (1, 32, 2)
+    Unlike standard RRT that treats all objects as obstacles, this planner
+    evaluates whether pushing a box is advantageous (moves it toward receptacle)
+    or detrimental (moves it away). This creates a cost landscape that encourages
+    exploitation of beneficial pushes while penalizing harmful ones.
     """
-    
-    # Push cost parameters
-    PUSH_COST_ADVANTAGE = 0.5      # Cost multiplier for advantageous pushes
-    PUSH_COST_PENALTY = 50.0       # Cost multiplier for detrimental pushes
-    OBSTACLE_COST = 1e6            # Cost for hitting walls
-    BASE_COST_MULTIPLIER = 2.0     # Multiplier for base edge cost
-    PUSH_COST_THRESHOLD = 0.05     # Cosine similarity threshold for "advantage"
     
     def __init__(
         self,
@@ -71,500 +44,490 @@ class SamplingPushingPlanner(BaseLowdimPolicy):
         rewire_radius_factor: float = 2.0,
         collision_check_resolution: float = 0.05,
         box_radius: float = 0.1,
-        verbose: bool = False
+        robot_radius: float = 0.25,
+        verbose: bool = False,
+        # Conditioning controls to match diffusion policy behavior
+        condition_trajectory: bool = False,
+        conditioning_functions: Optional[List[Callable]] = None,
     ):
         """
-        Initialize the SamplingPushingPlanner.
+        Initialize the RRT* planner with box-aware cost parameters.
         
         Args:
-            horizon: Number of output waypoints (default 32 for DiffusionPolicy)
-            max_iterations: Max iterations of RRT* tree expansion
-            step_size: Max distance per RRT* expansion step
-            goal_sample_rate: Probability of sampling goal directly
+            horizon: Number of output waypoints (must match DiffusionPolicy)
+            max_iterations: Maximum RRT* expansion iterations
+            step_size: Maximum edge extension distance
+            goal_sample_rate: Probability of sampling goal vs. random
             rewire_radius_factor: Multiplier for k-nearest rewiring radius
             collision_check_resolution: Distance between collision check points
             box_radius: Approximate radius of movable boxes
+            robot_radius: Robot footprint radius (for collision buffer - IMPORTANT!)
             verbose: Print debug information
         """
         self.horizon = horizon
         self.max_iterations = max_iterations
         self.step_size = step_size
         self.goal_sample_rate = goal_sample_rate
-        self.rewire_radius_factor = rewire_radius_factor
         self.collision_check_resolution = collision_check_resolution
         self.box_radius = box_radius
+        self.robot_radius = robot_radius
+        # Conditioning (optional) to apply the same feasibility conditioning
+        # that the diffusion policy uses (e.g., ensure_waypoint_feasibility)
+        self.condition_trajectory = condition_trajectory
+        self.conditioning_functions = conditioning_functions
         self.verbose = verbose
         
-        # RRT* parameters
-        self.gamma = 0.0  # Will be set based on free space area
-        self.k_nearest_factor = 1.2  # For k = k_nearest_factor * log(n)
+        # Derived parameters
+        self.search_radius = rewire_radius_factor * step_size
+        self.k_neighbors = 10
+        self.push_alignment_threshold = 0.05
+        self.advantageous_push_cost = 0.5
+        self.detrimental_push_cost = 50.0
+        self.box_proximity_threshold = box_radius * 2.0
         
-    def predict_action(
-        self,
-        obs_dict: Dict[str, torch.Tensor],
-        cond=None
-    ) -> Dict[str, torch.Tensor]:
+        self.rng = np.random.RandomState(42)
+        
+        # Environment state (set by plan())
+        self.obstacle_map = None
+        self.inflated_obstacle_map = None  # NEW: Obstacles with robot_radius buffer
+        self.grid_width = None
+        self.grid_height = None
+        self.box_positions = []
+        self.receptacle_pos = None
+    
+    def _inflate_obstacles(self, obstacle_map: np.ndarray) -> np.ndarray:
         """
-        Plan a path from robot_pos to goal_pos and return interpolated waypoints.
+        Inflate fixed obstacles by robot_radius to ensure collision-free paths.
+        
+        Args:
+            obstacle_map: Binary grid (1 = obstacle, 0 = free)
+        
+        Returns:
+            Inflated obstacle map with robot_radius buffer
+        """
+        # Convert robot_radius (in meters/grid units) to pixels
+        # Assuming 1 grid cell = 0.1m (adjust if your resolution differs)
+        inflation_pixels = int(np.ceil(self.robot_radius / 0.1))
+        
+        # Create circular structuring element
+        y, x = np.ogrid[-inflation_pixels:inflation_pixels+1, -inflation_pixels:inflation_pixels+1]
+        structure = x**2 + y**2 <= inflation_pixels**2
+        
+        # Dilate obstacles
+        inflated = binary_dilation(obstacle_map, structure=structure)
+        return inflated.astype(np.uint8)
+    
+    def _is_valid(self, pos: np.ndarray) -> bool:
+        """Check if a position is collision-free with FIXED obstacles (with robot_radius buffer)."""
+        x, y = int(pos[0]), int(pos[1])
+        
+        # Bounds check
+        if x < 0 or x >= self.grid_width or y < 0 or y >= self.grid_height:
+            return False
+        
+        # Check inflated obstacle map (already accounts for robot_radius)
+        return self.inflated_obstacle_map[y, x] == 0
+    
+    def _line_collision_check(self, pos1: np.ndarray, pos2: np.ndarray, num_checks: int = 20) -> bool:
+        """
+        Check if the line segment between pos1 and pos2 is collision-free.
+        
+        Args:
+            pos1: Start position (x, y)
+            pos2: End position (x, y)
+            num_checks: Number of interpolation points to check
+        
+        Returns:
+            True if collision-free, False otherwise
+        """
+        for alpha in np.linspace(0, 1, num_checks):
+            intermediate = pos1 + alpha * (pos2 - pos1)
+            if not self._is_valid(intermediate):
+                return False
+        return True
+    
+    def _compute_edge_cost(self, pos1: np.ndarray, pos2: np.ndarray) -> float:
+        """
+        Compute the cost of traversing from pos1 to pos2.
+        
+        This is where the "Deviation Heuristic" is applied:
+        - Base cost = Euclidean distance
+        - If path intersects a box:
+            * Compute push vector (robot → box)
+            * Compute target vector (box → receptacle)
+            * If aligned (cos θ > threshold): LOW COST (exploit push)
+            * If misaligned: HIGH COST (force deviation)
+        
+        Args:
+            pos1: Start position
+            pos2: End position
+        
+        Returns:
+            Total cost for this edge
+        """
+        # Base cost: Euclidean distance
+        base_cost = np.linalg.norm(pos2 - pos1)
+        
+        # Check for box interactions
+        push_cost_multiplier = 1.0
+        
+        for box_pos in self.box_positions:
+            # Compute minimum distance from line segment to box center
+            dist_to_box = self._point_to_segment_distance(box_pos, pos1, pos2)
+            
+            # If robot path comes close to box, evaluate push alignment
+            if dist_to_box < self.box_proximity_threshold:
+                # Push vector: direction from robot to box
+                push_vector = box_pos - pos1
+                push_vector_norm = np.linalg.norm(push_vector)
+                
+                if push_vector_norm > 1e-6:
+                    push_vector = push_vector / push_vector_norm
+                    
+                    # Target vector: direction from box to receptacle
+                    target_vector = self.receptacle_pos - box_pos
+                    target_vector_norm = np.linalg.norm(target_vector)
+                    
+                    if target_vector_norm > 1e-6:
+                        target_vector = target_vector / target_vector_norm
+                        
+                        # Compute alignment (cosine similarity)
+                        alignment = np.dot(push_vector, target_vector)
+                        
+                        # Apply Deviation Heuristic
+                        if alignment > self.push_alignment_threshold:
+                            # Advantageous push: REDUCE cost (encourage this path)
+                            push_cost_multiplier = min(push_cost_multiplier, self.advantageous_push_cost)
+                        else:
+                            # Detrimental push: INCREASE cost (penalize this path)
+                            push_cost_multiplier = max(push_cost_multiplier, self.detrimental_push_cost)
+        
+        return base_cost * push_cost_multiplier
+    
+    def _point_to_segment_distance(self, point: np.ndarray, seg_start: np.ndarray, seg_end: np.ndarray) -> float:
+        """
+        Compute minimum distance from a point to a line segment.
+        
+        Args:
+            point: Query point (x, y)
+            seg_start: Segment start (x, y)
+            seg_end: Segment end (x, y)
+        
+        Returns:
+            Minimum distance to segment
+        """
+        seg_vec = seg_end - seg_start
+        seg_len_sq = np.dot(seg_vec, seg_vec)
+        
+        if seg_len_sq < 1e-10:
+            # Degenerate segment (point)
+            return np.linalg.norm(point - seg_start)
+        
+        # Project point onto segment
+        t = max(0, min(1, np.dot(point - seg_start, seg_vec) / seg_len_sq))
+        projection = seg_start + t * seg_vec
+        
+        return np.linalg.norm(point - projection)
+    
+    def _steer(self, from_node: RRTNode, to_pos: np.ndarray) -> Tuple[np.ndarray, float]:
+        """
+        Steer from from_node toward to_pos, limited by step_size.
+        
+        Returns:
+            new_pos: New position after steering
+            distance: Actual distance traveled
+        """
+        direction = to_pos - from_node.pos
+        distance = np.linalg.norm(direction)
+        
+        if distance < self.step_size:
+            return to_pos, distance
+        else:
+            new_pos = from_node.pos + (direction / distance) * self.step_size
+            return new_pos, self.step_size
+    
+    def _sample_random_position(self, goal_pos: np.ndarray) -> np.ndarray:
+        """
+        Sample a random position in the workspace.
+        With probability goal_sample_rate, return goal_pos (for faster convergence).
+        """
+        if self.rng.rand() < self.goal_sample_rate:
+            return goal_pos.copy()
+        
+        return np.array([
+            self.rng.uniform(0, self.grid_width - 1),
+            self.rng.uniform(0, self.grid_height - 1)
+        ])
+    
+    def _get_nearest_node(self, tree: List[RRTNode], pos: np.ndarray) -> RRTNode:
+        """Find the nearest node in the tree to the given position."""
+        min_dist = float('inf')
+        nearest = tree[0]
+        
+        for node in tree:
+            dist = np.linalg.norm(node.pos - pos)
+            if dist < min_dist:
+                min_dist = dist
+                nearest = node
+        
+        return nearest
+    
+    def _get_nearby_nodes(self, tree: List[RRTNode], kdtree: KDTree, pos: np.ndarray) -> List[RRTNode]:
+        """
+        Get all nodes within search_radius of pos using KDTree.
+        Limited to k_neighbors for computational efficiency.
+        """
+        indices = kdtree.query_ball_point(pos, self.search_radius)
+        nearby = [tree[i] for i in indices]
+        
+        # Sort by cost and take top k_neighbors
+        nearby.sort(key=lambda n: n.cost)
+        return nearby[:self.k_neighbors]
+    
+    def _reconstruct_path(self, goal_node: RRTNode) -> np.ndarray:
+        """
+        Backtrack from goal_node to root to extract path.
+        Interpolate to horizon waypoints to match DiffusionPolicy output format.
+        """
+        # Backtrack to get path
+        path = []
+        current = goal_node
+        while current is not None:
+            path.append(current.pos)
+            current = current.parent
+        
+        path.reverse()
+        path = np.array(path)
+        
+        # Interpolate to exactly horizon waypoints
+        if len(path) < 2:
+            # Degenerate case: repeat goal
+            return np.tile(path[0], (self.horizon, 1))
+        
+        # Linear interpolation
+        path_length = np.cumsum(np.r_[0, np.linalg.norm(np.diff(path, axis=0), axis=1)])
+        total_length = path_length[-1]
+        
+        if total_length < 1e-6:
+            return np.tile(path[0], (self.horizon, 1))
+        
+        # Sample horizon evenly-spaced points along path
+        target_lengths = np.linspace(0, total_length, self.horizon)
+        interpolated_path = np.zeros((32, 2))
+        
+        for i, target_len in enumerate(target_lengths):
+            idx = np.searchsorted(path_length, target_len)
+            if idx == 0:
+                interpolated_path[i] = path[0]
+            elif idx >= len(path):
+                interpolated_path[i] = path[-1]
+            else:
+                # Linear interpolation between path[idx-1] and path[idx]
+                alpha = (target_len - path_length[idx-1]) / (path_length[idx] - path_length[idx-1])
+                interpolated_path[i] = (1 - alpha) * path[idx-1] + alpha * path[idx]
+        
+        return interpolated_path
+    
+    def predict_action(self, obs_dict: dict, cond=None) -> dict:
+        """
+        Main entry point called by HeRDPolicy integration.
         
         Args:
             obs_dict: Dictionary containing:
-                - 'grid': (H, W) obstacle map where 1=obstacle, 0=free
-                - 'robot_pos': (2,) current robot position in world coords
-                - 'goal_pos': (2,) goal position
-                - 'box_positions': List of (2,) box positions
-                - 'receptacle_pos': (2,) receptacle position
-            cond: Optional conditioning (unused, for API compatibility)
-            
+                - 'grid': (1, H, W) tensor - occupancy grid
+                - 'robot_pos': (2,) array - robot position in grid coords
+                - 'goal_pos': (2,) array - goal position in grid coords
+                - 'box_positions': list of (2,) arrays - box positions in grid coords
+                - 'receptacle_pos': (2,) array - receptacle position in grid coords
+            cond: Unused (for API compatibility)
+        
         Returns:
-            Dictionary with 'action' key containing waypoints of shape (1, horizon, 2)
+            Dictionary with 'action' key containing (1, horizon, 2) tensor of waypoints
         """
+        import torch
+        
         # Extract inputs
-        grid, robot_pos, goal_pos, box_positions, receptacle_pos = \
-            self._extract_planning_inputs(obs_dict)
+        grid = obs_dict['grid']
+        if isinstance(grid, torch.Tensor):
+            grid = grid.detach().cpu().numpy()[0]  # (H, W)
         
-        if self.verbose:
-            print(f"[SamplingPushingPlanner] Planning from {robot_pos} to {goal_pos}")
-            print(f"[SamplingPushingPlanner] {len(box_positions)} boxes, receptacle at {receptacle_pos}")
+        robot_pos = np.array(obs_dict['robot_pos'], dtype=np.float64)
+        goal_pos = np.array(obs_dict['goal_pos'], dtype=np.float64)
+        receptacle_pos = np.array(obs_dict['receptacle_pos'], dtype=np.float64)
         
-        # Plan path using RRT*
-        path_nodes = self._plan_rrt_star(
-            grid, robot_pos, goal_pos, box_positions, receptacle_pos
-        )
-        
-        # Interpolate to horizon waypoints
-        if path_nodes is None or len(path_nodes) < 2:
-            # Fallback: direct interpolation
-            if self.verbose:
-                print("[SamplingPushingPlanner] RRT* failed; using fallback linear path")
-            path_nodes = [robot_pos, goal_pos]
-        
-        waypoints = self._interpolate_waypoints(path_nodes, self.horizon)
-        
-        # Return in expected format: (batch=1, horizon, 2)
-        return {
-            'action': torch.tensor(waypoints, dtype=torch.float32).unsqueeze(0)
-        }
-    
-    # ===== Input/Output Processing =====
-    
-    def _extract_planning_inputs(
-        self,
-        obs_dict: Dict[str, torch.Tensor]
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[np.ndarray], np.ndarray]:
-        """Extract planning inputs from obs_dict."""
-        
-        # Extract grid
-        if 'grid' in obs_dict:
-            grid = obs_dict['grid']
-            if isinstance(grid, torch.Tensor):
-                grid = grid.detach().cpu().numpy()
-            if grid.ndim == 3:
-                grid = grid[0]
-        else:
-            raise ValueError("obs_dict must contain 'grid' key")
-        
-        # Extract positions
-        robot_pos = self._to_numpy(obs_dict.get('robot_pos'))
-        goal_pos = self._to_numpy(obs_dict.get('goal_pos'))
-        receptacle_pos = self._to_numpy(obs_dict.get('receptacle_pos'))
-        
-        # Extract box positions
         box_positions = []
         if 'box_positions' in obs_dict:
-            boxes = obs_dict['box_positions']
-            
-            # Handle list of numpy arrays or tensors
-            if isinstance(boxes, list):
-                for box in boxes:
-                    box_np = self._to_numpy(box)
-                    box_positions.append(box_np)
-            else:
-                # Handle tensor or numpy array
-                if isinstance(boxes, torch.Tensor):
-                    boxes = boxes.detach().cpu().numpy()
-                if isinstance(boxes, np.ndarray):
-                    if boxes.ndim == 2:
-                        box_positions = [boxes[i] for i in range(boxes.shape[0])]
-                    elif boxes.ndim == 1:
-                        box_positions = [boxes]
+            for bp in obs_dict['box_positions']:
+                box_positions.append(np.array(bp, dtype=np.float64))
         
-        return grid, robot_pos, goal_pos, box_positions, receptacle_pos
+        # Call internal planning method
+        waypoints = self.plan(robot_pos, goal_pos, box_positions, receptacle_pos, grid)
+
+        # Optionally apply the same conditioning functions used by the diffusion policy
+        path = []
+        for wp_grid in waypoints:
+            # wp_grid is [j, i] (x, y) in grid coordinates
+            j = int(np.clip(wp_grid[0], 0, grid.shape[1] - 1))
+            i = int(np.clip(wp_grid[1], 0, grid.shape[0] - 1))
+            wp_world = obs_dict['pixel_indices_to_position'](i, j, grid.shape)
+            path.append(wp_world)
+
+        if self.condition_trajectory and self.conditioning_functions is not None:
+            try:
+                traj = torch.tensor(path, dtype=torch.float32).unsqueeze(0)  # [1, T, 2]
+                for func in self.conditioning_functions:
+                    traj = func(traj)
+                path = traj.detach().cpu().numpy().squeeze(0)
+            except Exception as e:
+                if self.verbose or True:
+                    print(f"Warning: conditioning functions failed: {e}")
+
+        # Return in expected format: (1, horizon, 2) tensor
+        return {'action': torch.tensor(path, dtype=torch.float32).unsqueeze(0)}
     
-    def _to_numpy(self, val) -> np.ndarray:
-        """Convert tensor/list to numpy array."""
-        if isinstance(val, torch.Tensor):
-            return val.detach().cpu().numpy()
-        return np.asarray(val)
-    
-    def _interpolate_waypoints(
+    def plan(
         self,
-        path_nodes: List[np.ndarray],
-        n_waypoints: int
+        robot_pos: np.ndarray,
+        goal_pos: np.ndarray,
+        box_positions: List[np.ndarray],
+        receptacle_pos: np.ndarray,
+        obstacle_map: np.ndarray
     ) -> np.ndarray:
         """
-        Interpolate path nodes to n_waypoints waypoints.
+        Plan a path from robot_pos to goal_pos using RRT* with box-aware costs.
         
         Args:
-            path_nodes: List of (2,) nodes
-            n_waypoints: Target number of waypoints
-            
-        Returns:
-            (n_waypoints, 2) array of interpolated waypoints
-        """
-        if len(path_nodes) < 2:
-            # Degenerate case
-            return np.repeat(path_nodes[0:1], n_waypoints, axis=0)
-        
-        path_nodes = np.array(path_nodes, dtype=np.float64)
-        
-        # Compute cumulative distances
-        diffs = np.diff(path_nodes, axis=0)
-        segment_lengths = np.linalg.norm(diffs, axis=1)
-        distances = np.concatenate(([0], np.cumsum(segment_lengths)))
-        total_dist = distances[-1]
-        
-        if total_dist < 1e-6:
-            return np.repeat(path_nodes[0:1], n_waypoints, axis=0)
-        
-        # Sample waypoints uniformly along path
-        sample_distances = np.linspace(0, total_dist, n_waypoints)
-        waypoints = np.interp(
-            sample_distances, distances, path_nodes[:, 0], left=path_nodes[0, 0]
-        ).astype(np.float64)
-        
-        # Handle y-coordinate
-        y_waypoints = np.interp(
-            sample_distances, distances, path_nodes[:, 1], left=path_nodes[0, 1]
-        ).astype(np.float64)
-        
-        return np.column_stack([waypoints, y_waypoints])
-    
-    # ===== RRT* Core Algorithm =====
-    
-    def _plan_rrt_star(
-        self,
-        grid: np.ndarray,
-        start: np.ndarray,
-        goal: np.ndarray,
-        box_positions: List[np.ndarray],
-        receptacle_pos: np.ndarray
-    ) -> Optional[List[np.ndarray]]:
-        """
-        Plan using RRT* algorithm with box-aware cost function.
+            robot_pos: Current robot position (x, y) in grid coordinates
+            goal_pos: Goal position (x, y) in grid coordinates
+            box_positions: List of box positions [(x1, y1), (x2, y2), ...] in grid coords
+            receptacle_pos: Receptacle position (x, y) in grid coordinates
+            obstacle_map: Binary grid (1 = fixed obstacle, 0 = free)
         
         Returns:
-            List of waypoint arrays, or None if planning failed
+            path: Numpy array of shape (horizon, 2) containing interpolated waypoints
         """
-        # Estimate free space for rewiring radius
-        free_cells = np.sum(grid < 0.5)
-        area = float(free_cells)
-        self.gamma = self.rewire_radius_factor * np.sqrt(area / np.pi)
+        start_time = time.time()
         
-        # Initialize tree
-        nodes = [start.copy()]
-        parents = [None]
-        costs = [0.0]  # Cost from start to each node
+        # Store environment state
+        self.obstacle_map = obstacle_map
+        self.grid_height, self.grid_width = obstacle_map.shape
+        self.box_positions = [np.array(bp) for bp in box_positions]
+        self.receptacle_pos = np.array(receptacle_pos)
         
+        # CRITICAL FIX: Inflate obstacles by robot_radius to prevent wall collisions!
+        self.inflated_obstacle_map = self._inflate_obstacles(obstacle_map)
+        
+        # Validate start and goal
+        if not self._is_valid(robot_pos):
+            if self.verbose:
+                print(f"Warning: Start position {robot_pos} is in collision! Returning straight line.")
+            return np.linspace(robot_pos, goal_pos, self.horizon)
+        
+        if not self._is_valid(goal_pos):
+            if self.verbose:
+                print(f"Warning: Goal position {goal_pos} is in collision! Returning straight line.")
+            return np.linspace(robot_pos, goal_pos, self.horizon)
+        
+        # Initialize RRT* tree
+        root = RRTNode(pos=robot_pos.copy(), parent=None, cost=0.0)
+        tree = [root]
+        
+        # RRT* expansion loop
         for iteration in range(self.max_iterations):
-            # Sample random point
-            if np.random.rand() < self.goal_sample_rate:
-                rand_point = goal.copy()
-            else:
-                rand_point = self._sample_random_point(grid)
+            # Sample random position
+            random_pos = self._sample_random_position(goal_pos)
             
             # Find nearest node
-            nearest_idx = self._find_nearest(nodes, rand_point)
-            nearest_node = nodes[nearest_idx]
+            nearest_node = self._get_nearest_node(tree, random_pos)
             
-            # Steer towards random point
-            direction = rand_point - nearest_node
-            dist = np.linalg.norm(direction)
+            # Steer toward random position
+            new_pos, _ = self._steer(nearest_node, random_pos)
             
-            if dist < 1e-6:
+            # Check if new position is valid
+            if not self._is_valid(new_pos):
                 continue
             
-            new_node = nearest_node + (direction / dist) * min(dist, self.step_size)
-            
-            # Check collision
-            if not self._is_collision_free(grid, nearest_node, new_node):
+            # Check if edge is collision-free
+            if not self._line_collision_check(nearest_node.pos, new_pos):
                 continue
             
-            # Compute cost: base distance + box-aware penalty
-            edge_cost = self._compute_edge_cost(
-                nearest_node, new_node, box_positions, receptacle_pos
+            # Compute edge cost using Deviation Heuristic
+            edge_cost = self._compute_edge_cost(nearest_node.pos, new_pos)
+            
+            # Create new node
+            new_node = RRTNode(
+                pos=new_pos,
+                parent=nearest_node,
+                cost=nearest_node.cost + edge_cost
             )
-            new_cost = costs[nearest_idx] + edge_cost
             
-            # Find k-nearest neighbors for rewiring
-            k = max(1, int(self.k_nearest_factor * np.log(len(nodes) + 1)))
-            nearest_indices = self._find_k_nearest(nodes, new_node, k)
+            # RRT* rewiring: find nearby nodes and choose best parent
+            if len(tree) > 1:
+                # Build KDTree for efficient nearest neighbor search
+                tree_positions = np.array([node.pos for node in tree])
+                kdtree = KDTree(tree_positions)
+                
+                nearby_nodes = self._get_nearby_nodes(tree, kdtree, new_pos)
+                
+                # Find best parent among nearby nodes
+                best_parent = nearest_node
+                best_cost = nearest_node.cost + edge_cost
+                
+                for nearby_node in nearby_nodes:
+                    if self._line_collision_check(nearby_node.pos, new_pos):
+                        candidate_edge_cost = self._compute_edge_cost(nearby_node.pos, new_pos)
+                        candidate_cost = nearby_node.cost + candidate_edge_cost
+                        
+                        if candidate_cost < best_cost:
+                            best_parent = nearby_node
+                            best_cost = candidate_cost
+                
+                # Update new node with best parent
+                new_node.parent = best_parent
+                new_node.cost = best_cost
             
-            # Find best parent among k-nearest
-            best_parent_idx = nearest_idx
-            best_cost = new_cost
+            # Add to tree
+            tree.append(new_node)
+            new_node.parent.children.append(new_node)
             
-            for parent_idx in nearest_indices:
-                parent_node = nodes[parent_idx]
+            # Rewire nearby nodes if new_node provides better path
+            if len(tree) > 1:
+                tree_positions = np.array([node.pos for node in tree])
+                kdtree = KDTree(tree_positions)
+                nearby_nodes = self._get_nearby_nodes(tree, kdtree, new_pos)
                 
-                # Check if rewiring would create collision
-                if not self._is_collision_free(grid, parent_node, new_node):
-                    continue
-                
-                # Compute cost through this parent
-                rewire_cost = self._compute_edge_cost(
-                    parent_node, new_node, box_positions, receptacle_pos
-                )
-                candidate_cost = costs[parent_idx] + rewire_cost
-                
-                if candidate_cost < best_cost:
-                    best_cost = candidate_cost
-                    best_parent_idx = parent_idx
-            
-            # Add new node with best parent
-            nodes.append(new_node.copy())
-            parents.append(best_parent_idx)
-            costs.append(best_cost)
-            new_node_idx = len(nodes) - 1
-            
-            # Rewire k-nearest if beneficial
-            for neighbor_idx in nearest_indices:
-                if neighbor_idx == best_parent_idx:
-                    continue
-                
-                neighbor_node = nodes[neighbor_idx]
-                
-                # Check collision
-                if not self._is_collision_free(grid, new_node, neighbor_node):
-                    continue
-                
-                # Compute cost through new_node
-                rewire_cost = self._compute_edge_cost(
-                    new_node, neighbor_node, box_positions, receptacle_pos
-                )
-                candidate_cost = best_cost + rewire_cost
-                
-                if candidate_cost < costs[neighbor_idx]:
-                    parents[neighbor_idx] = new_node_idx
-                    costs[neighbor_idx] = candidate_cost
-            
-            # Check if reached goal
-            dist_to_goal = np.linalg.norm(new_node - goal)
-            if dist_to_goal < self.step_size:
-                # Add goal node
-                if self._is_collision_free(grid, new_node, goal):
-                    goal_cost = self._compute_edge_cost(
-                        new_node, goal, box_positions, receptacle_pos
-                    )
-                    goal_total_cost = best_cost + goal_cost
+                for nearby_node in nearby_nodes:
+                    if nearby_node == new_node.parent:
+                        continue
                     
-                    nodes.append(goal.copy())
-                    parents.append(new_node_idx)
-                    costs.append(goal_total_cost)
-                    
-                    if self.verbose:
-                        print(f"[RRT*] Goal reached at iteration {iteration}")
-                    
-                    # Reconstruct path
-                    return self._reconstruct_path(nodes, parents)
+                    if self._line_collision_check(new_node.pos, nearby_node.pos):
+                        candidate_edge_cost = self._compute_edge_cost(new_node.pos, nearby_node.pos)
+                        candidate_cost = new_node.cost + candidate_edge_cost
+                        
+                        if candidate_cost < nearby_node.cost:
+                            # Rewire: update parent
+                            old_parent = nearby_node.parent
+                            if old_parent:
+                                old_parent.children.remove(nearby_node)
+                            
+                            nearby_node.parent = new_node
+                            nearby_node.cost = candidate_cost
+                            new_node.children.append(nearby_node)
+            
+            # Check if we reached the goal
+            if np.linalg.norm(new_pos - goal_pos) < self.step_size:
+                # Found a path to goal!
+                elapsed = time.time() - start_time
+                if self.verbose:
+                    print(f"RRT* found path in {elapsed:.2f}s ({iteration+1} iterations, {len(tree)} nodes)")
+                
+                return self._reconstruct_path(new_node)
         
+        # Max iterations reached without finding goal
+        # Return path to closest node to goal
+        closest_node = min(tree, key=lambda n: np.linalg.norm(n.pos - goal_pos))
+        elapsed = time.time() - start_time
         if self.verbose:
-            print(f"[RRT*] Max iterations reached; returning best path to goal")
+            print(f"RRT* timeout ({elapsed:.2f}s). Returning path to closest node (dist={np.linalg.norm(closest_node.pos - goal_pos):.2f})")
         
-        # Find node closest to goal
-        closest_idx = min(range(len(nodes)), key=lambda i: np.linalg.norm(nodes[i] - goal))
-        return self._reconstruct_path(nodes, parents, end_idx=closest_idx)
-    
-    def _sample_random_point(self, grid: np.ndarray) -> np.ndarray:
-        """Sample a random point in the free space."""
-        H, W = grid.shape
-        while True:
-            i = np.random.randint(0, H)
-            j = np.random.randint(0, W)
-            if grid[i, j] < 0.5:  # Free space
-                return np.array([float(j), float(i)])
-    
-    def _find_nearest(self, nodes: List[np.ndarray], point: np.ndarray) -> int:
-        """Find index of nearest node to point."""
-        if not nodes:
-            return 0
-        distances = [np.linalg.norm(n - point) for n in nodes]
-        return int(np.argmin(distances))
-    
-    def _find_k_nearest(
-        self,
-        nodes: List[np.ndarray],
-        point: np.ndarray,
-        k: int
-    ) -> List[int]:
-        """Find indices of k nearest nodes using KDTree."""
-        if len(nodes) < k:
-            return list(range(len(nodes)))
-        
-        nodes_array = np.array(nodes)
-        tree = KDTree(nodes_array)
-        _, indices = tree.query(point, k=min(k, len(nodes)))
-        
-        if isinstance(indices, (list, np.ndarray)):
-            return list(indices)
-        else:
-            return [indices]
-    
-    def _is_collision_free(
-        self,
-        grid: np.ndarray,
-        node_a: np.ndarray,
-        node_b: np.ndarray
-    ) -> bool:
-        """
-        Check if path from node_a to node_b is collision-free.
-        Only checks against walls, not boxes (boxes are handled in cost function).
-        """
-        H, W = grid.shape
-        
-        # Bresenham-like sampling
-        direction = node_b - node_a
-        distance = np.linalg.norm(direction)
-        
-        if distance < 1e-6:
-            return True
-        
-        n_steps = int(np.ceil(distance / self.collision_check_resolution)) + 1
-        
-        for step in range(n_steps):
-            t = step / max(n_steps - 1, 1)
-            point = node_a + t * direction
-            
-            i = int(np.clip(point[1], 0, H - 1))
-            j = int(np.clip(point[0], 0, W - 1))
-            
-            if grid[i, j] > 0.5:  # Obstacle
-                return False
-        
-        return True
-    
-    # ===== Box-Aware Cost Function =====
-    
-    def _compute_edge_cost(
-        self,
-        node_a: np.ndarray,
-        node_b: np.ndarray,
-        box_positions: List[np.ndarray],
-        receptacle_pos: np.ndarray
-    ) -> float:
-        """
-        Compute cost of traversing edge (node_a -> node_b).
-        
-        Cost = base_distance * (1 + box_penalty)
-        
-        where box_penalty is computed based on intersection with boxes:
-        - Advantageous push (towards receptacle): low penalty
-        - Detrimental push (away from receptacle): high penalty
-        """
-        base_distance = np.linalg.norm(node_b - node_a)
-        
-        if base_distance < 1e-6:
-            return 0.0
-        
-        # Compute box penalties
-        total_penalty = 0.0
-        edge_direction = (node_b - node_a) / base_distance
-        
-        for box_pos in box_positions:
-            # Check if edge is close to box
-            dist_to_edge, closest_point = self._distance_point_to_segment(
-                box_pos, node_a, node_b
-            )
-            
-            if dist_to_edge > 2.0 * self.box_radius:
-                continue  # Too far away
-            
-            # Compute push vector (from robot towards box)
-            push_vec = box_pos - closest_point
-            push_dist = np.linalg.norm(push_vec)
-            
-            if push_dist < 1e-6:
-                # Robot passes through box center, treat as interaction
-                push_vec = edge_direction
-                push_dist = 1.0
-            else:
-                push_vec_normalized = push_vec / push_dist
-                push_vec = push_vec_normalized
-            
-            # Compute target vector (from box to receptacle)
-            target_vec = receptacle_pos - box_pos
-            target_dist = np.linalg.norm(target_vec)
-            
-            if target_dist < 1e-6:
-                continue  # Box already at receptacle
-            
-            target_vec_normalized = target_vec / target_dist
-            
-            # Compute alignment (cosine similarity)
-            alignment = np.dot(push_vec, target_vec_normalized)
-            
-            # Proximity weight: higher penalty for closer interactions
-            proximity_weight = max(0.0, 1.0 - dist_to_edge / (2.0 * self.box_radius))
-            proximity_weight = proximity_weight ** 2
-            
-            # Apply penalty based on alignment
-            if alignment > self.PUSH_COST_THRESHOLD:
-                # Advantageous push: moving box towards receptacle
-                penalty = self.PUSH_COST_ADVANTAGE * (1.0 - alignment) * proximity_weight
-            else:
-                # Detrimental push: moving box away from receptacle or perpendicular
-                penalty = self.PUSH_COST_PENALTY * max(0.0, -alignment) * proximity_weight
-            
-            total_penalty += penalty
-        
-        edge_cost = base_distance * self.BASE_COST_MULTIPLIER * (1.0 + total_penalty)
-        return edge_cost
-    
-    def _distance_point_to_segment(
-        self,
-        point: np.ndarray,
-        seg_a: np.ndarray,
-        seg_b: np.ndarray
-    ) -> Tuple[float, np.ndarray]:
-        """
-        Compute distance from point to line segment [seg_a, seg_b].
-        
-        Returns:
-            (distance, closest_point_on_segment)
-        """
-        seg_vec = seg_b - seg_a
-        seg_length_sq = np.sum(seg_vec ** 2)
-        
-        if seg_length_sq < 1e-12:
-            return np.linalg.norm(point - seg_a), seg_a.copy()
-        
-        # Project point onto segment
-        t = np.dot(point - seg_a, seg_vec) / seg_length_sq
-        t = np.clip(t, 0.0, 1.0)
-        
-        closest = seg_a + t * seg_vec
-        distance = np.linalg.norm(point - closest)
-        
-        return distance, closest
-    
-    # ===== Path Reconstruction =====
-    
-    def _reconstruct_path(
-        self,
-        nodes: List[np.ndarray],
-        parents: List[Optional[int]],
-        end_idx: Optional[int] = None
-    ) -> List[np.ndarray]:
-        """Reconstruct path from start (index 0) to end_idx."""
-        if end_idx is None:
-            end_idx = len(nodes) - 1
-        
-        path = []
-        idx = end_idx
-        
-        while idx is not None:
-            path.append(nodes[idx].copy())
-            idx = parents[idx]
-        
-        path.reverse()
-        return path
+        return self._reconstruct_path(closest_node)

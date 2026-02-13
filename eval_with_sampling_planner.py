@@ -105,7 +105,7 @@ def evaluate_sampling_planner(
             'final_exploration': 0.0,
         },
         'boxes': {
-            'box_size': 0.2,
+            'box_size': 0.44,
         },
         'rewards': {
             'max_distance_reward': True,
