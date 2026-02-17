@@ -103,9 +103,9 @@ if __name__ == '__main__':
                 'eval_mode': True,
                 'num_eps': 20,
                 'obs_configs': ['small_empty', 'small_columns', 'large_columns', 'large_divider'], # list of observation configurations
-                'model_names': ['herd_rl_policy', 'herd_rl_policy', 'herd_rl_policy', 'herd_rl_policy'], # list of model names to evaluate
+                'model_names': ['sampling_rl_policy', 'sampling_rl_policy', 'sampling_rl_policy', 'sampling_rl_policy'], # list of model names to evaluate
                 'diffusion_configs': [True, True, True, True],
-                'policy_types': ['rrt', 'rrt', 'rrt', 'rrt']
+                'policy_types': ['diffusion', 'diffusion', 'diffusion', 'diffusion']
             },
             'rewards': {
                 'max_distance_reward': True,
