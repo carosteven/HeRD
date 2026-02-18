@@ -175,6 +175,15 @@ diffusion:
   model_path: models/diffusion_models/
   model_name: herd_diffusion_model.ckpt
 
+low_level:
+  use_low_level_rl: false
+  algorithm: ppo
+  model_path: models/rl_models/low_level_hrl_policy
+  max_steps: 64
+  goal_threshold_m: 0.2
+  step_size_pixels: 1
+  deterministic: true
+
 demonstration:
   demonstration_mode: false
   teleop_mode: false     # when using teleoperation mode, control both forward and angular speed

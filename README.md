@@ -88,3 +88,20 @@ Specify the location of the demonstration data in `submodules/diffusionPolicy/di
 python submodules/diffusionPolicy/diffusionPolicy/train.py --config-name=train_diffusion_unet_lowdim_workspace
 ```
 
+#### 3. Pre-train Low-Level HRL Baseline (PPO/DQN)
+This baseline replaces the diffusion low-level controller with a standard RL navigation agent that moves to a high-level spatial subgoal.
+
+Train the low-level policy (defaults to PPO):
+
+```bash
+python scripts/train_low_level.py --algorithm ppo
+```
+
+Or train with DQN:
+
+```bash
+python scripts/train_low_level.py --algorithm dqn
+```
+
+The script saves model weights to `models/rl_models/low_level_hrl_policy` (unless overridden with `--save-path`) and stops early when eval success on random start-goal navigation exceeds the configured threshold (`--success-threshold`, default `0.90`).
+

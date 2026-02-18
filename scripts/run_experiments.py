@@ -111,6 +111,15 @@ if __name__ == '__main__':
                 'model_name': 'herd_diffusion_model.ckpt',
                 'obs_dim': 26, # for combo
                 'obs_type': 'combo', # 'positions', 'vertices', or 'combo'
+            },
+            'low_level': {
+                'use_low_level_rl': False,
+                'algorithm': 'ppo',
+                'model_path': 'models/rl_models/low_level_hrl_policy',
+                'max_steps': 64,
+                'goal_threshold_m': 0.2,
+                'step_size_pixels': 1,
+                'deterministic': True,
             }
             
         }
