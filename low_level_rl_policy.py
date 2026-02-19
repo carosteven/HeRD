@@ -14,6 +14,7 @@ from environment import (
     BOX_SEG_INDEX,
     MAX_SEG_INDEX,
     OBSTACLE_SEG_INDEX,
+    WAYPOINT_MOVING_THRESHOLD,
     BoxDeliveryEnv,
 )
 
@@ -28,7 +29,7 @@ class LowLevelNavEnv(gym.Env):
       3. Distance transform to robot (same as high-level)
       4. Distance transform to subgoal (x_g, y_g)
 
-    Action: Discrete(9) => 8 compass moves + stop
+    Action: Discrete(8) => 8 compass moves
     """
 
     metadata = {"render_modes": ["human", "rgb_array"]}
@@ -38,7 +39,7 @@ class LowLevelNavEnv(gym.Env):
         cfg: Optional[Dict] = None,
         max_steps: int = 128,
         step_size_pixels: int = 1,
-        goal_threshold_m: float = 0.2,
+        goal_threshold_m: float = WAYPOINT_MOVING_THRESHOLD,
         min_start_goal_distance_m: float = 1.0,
     ):
         super().__init__()
@@ -50,7 +51,7 @@ class LowLevelNavEnv(gym.Env):
 
         self.step_size_m = step_size_pixels / self.base_env.local_map_pixels_per_meter
 
-        self.action_space = spaces.Discrete(9)
+        self.action_space = spaces.Discrete(8)
         self.observation_space = spaces.Box(
             low=0,
             high=255,
@@ -72,7 +73,6 @@ class LowLevelNavEnv(gym.Env):
                 [-1, -1],  # SW
                 [-1, 0],   # W
                 [-1, 1],   # NW
-                [0, 0],    # STOP
             ],
             dtype=np.float32,
         )
@@ -90,7 +90,7 @@ class LowLevelNavEnv(gym.Env):
             dtype=np.float32,
         )
 
-    def _is_blocked_by_semantics(self, position_xy: np.ndarray) -> bool:
+    def _is_blocked_by_semantics(self, position_xy: np.ndarray, include_boxes: bool = True) -> bool:
         pixel_i, pixel_j = self.base_env.position_to_pixel_indices(
             position_xy[0],
             position_xy[1],
@@ -99,13 +99,15 @@ class LowLevelNavEnv(gym.Env):
         value = self.base_env.global_overhead_map[pixel_i, pixel_j]
 
         obstacle_value = OBSTACLE_SEG_INDEX / MAX_SEG_INDEX
-        box_value = BOX_SEG_INDEX / MAX_SEG_INDEX
-        return bool(
-            np.isclose(value, obstacle_value, atol=1e-6)
-            or np.isclose(value, box_value, atol=1e-6)
-        )
+        if include_boxes:
+            box_value = BOX_SEG_INDEX / MAX_SEG_INDEX
+            return bool(
+                np.isclose(value, obstacle_value, atol=1e-6)
+                or np.isclose(value, box_value, atol=1e-6)
+            )
+        return bool(np.isclose(value, obstacle_value, atol=1e-6))
 
-    def _is_valid_position(self, position_xy: np.ndarray) -> bool:
+    def _is_valid_position(self, position_xy: np.ndarray, include_boxes: bool = True) -> bool:
         i, j = self.base_env.position_to_pixel_indices(
             position_xy[0],
             position_xy[1],
@@ -115,7 +117,7 @@ class LowLevelNavEnv(gym.Env):
             return False
 
         self.base_env.update_global_overhead_map()
-        if self._is_blocked_by_semantics(position_xy):
+        if self._is_blocked_by_semantics(position_xy, include_boxes=include_boxes):
             return False
 
         return True
@@ -134,7 +136,7 @@ class LowLevelNavEnv(gym.Env):
                 self.base_env.configuration_space.shape,
             )
             candidate = np.array([x, y], dtype=np.float32)
-            if self._is_valid_position(candidate):
+            if self._is_valid_position(candidate, include_boxes=True):
                 return candidate
 
         raise RuntimeError("Unable to sample valid position from free space.")
@@ -222,20 +224,52 @@ class LowLevelNavEnv(gym.Env):
 
         action = int(action)
         current_pos = self._robot_position()
+        current_heading = float(self.base_env.restrict_heading_range(self.base_env.robot.body.angle))
 
         direction = self._directions[action]
-        if action != 8:
-            direction_norm = np.linalg.norm(direction)
-            if direction_norm > 0:
-                direction = direction / direction_norm
-            candidate_pos = current_pos + direction * self.step_size_m
+        direction_norm = np.linalg.norm(direction)
+        if direction_norm > 0:
+            direction = direction / direction_norm
+        target_heading = float(np.arctan2(direction[1], direction[0]))
+        self.base_env.robot.body.angle = target_heading
+        self.base_env.robot_hit_obstacle = False
 
-            if self._is_valid_position(candidate_pos):
-                self.base_env.robot.body.position = (float(candidate_pos[0]), float(candidate_pos[1]))
-            else:
-                collision = True
-                reward -= 10.0
-                terminated = True
+        moved_total = 0.0
+        max_internal_steps = 64
+        speed = float(self.base_env.target_speed * 2.0)
+        for _ in range(max_internal_steps):
+            if moved_total >= self.step_size_m:
+                break
+
+            prev = self._robot_position()
+            self.base_env.robot.body.angular_velocity = 0.0
+            self.base_env.robot.body.velocity = (direction * speed).tolist()
+            self.base_env.space.step(self.base_env.dt / self.base_env.steps)
+            curr = self._robot_position()
+
+            moved_step = float(np.linalg.norm(curr - prev))
+            moved_total += moved_step
+
+            if self.base_env.robot_hit_obstacle:
+                break
+
+            if moved_step < 1e-5:
+                break
+
+        self.base_env.robot.body.angular_velocity = 0.0
+        self.base_env.robot.body.velocity = (0.0, 0.0)
+        self.base_env.step_simulation_until_still()
+
+        moved_vec = self._robot_position() - current_pos
+        moved_norm = float(np.linalg.norm(moved_vec))
+        if moved_norm > 1e-6:
+            moved_heading = float(np.arctan2(moved_vec[1], moved_vec[0]))
+            self.base_env.robot.body.angle = moved_heading
+
+        if self.base_env.robot_hit_obstacle and moved_norm < 0.3 * self.step_size_m:
+            collision = True
+            reward -= 10.0
+            terminated = True
 
         curr_dist = self._distance(self._robot_position(), self._goal_position)
         reward += self._prev_dist - curr_dist
@@ -398,7 +432,6 @@ class LowLevelRLPolicy:
                 [-1, -1],
                 [-1, 0],
                 [-1, 1],
-                [0, 0],
             ],
             dtype=np.float32,
         )
@@ -549,9 +582,6 @@ class LowLevelRLPolicy:
             action = self.act(obs, deterministic=deterministic)
 
             direction = self._directions[int(action)]
-            if int(action) == 8:
-                break
-
             direction_norm = np.linalg.norm(direction)
             if direction_norm > 0:
                 direction = direction / direction_norm

@@ -44,7 +44,7 @@ def parse_args():
 def make_env_cfg(obstacle_config: str, seed: int):
     return {
         "render": {
-            "show": False,
+            "show": True,
             "show_obs": False,
         },
         "env": {
@@ -52,6 +52,9 @@ def make_env_cfg(obstacle_config: str, seed: int):
         },
         "misc": {
             "random_seed": seed,
+        },
+        'train': { 
+            'random_env': True,
         },
     }
 

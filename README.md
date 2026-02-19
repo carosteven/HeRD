@@ -105,3 +105,17 @@ python scripts/train_low_level.py --algorithm dqn
 
 The script saves model weights to `models/rl_models/low_level_hrl_policy` (unless overridden with `--save-path`) and stops early when eval success on random start-goal navigation exceeds the configured threshold (`--success-threshold`, default `0.90`).
 
+#### 4. Visually Evaluate a Trained Low-Level Model
+To watch the trained low-level model navigate random point-to-point tasks:
+
+```bash
+python scripts/evaluate_low_level.py --algorithm ppo --model-path models/rl_models/low_level_hrl_policy
+```
+
+Useful options:
+
+- `--episodes 20` to run more episodes
+- `--obstacle-config small_empty` (or `small_columns`, `large_columns`, `large_divider`)
+- `--show-obs` to also render observation channels
+- `--sleep 0.05` to slow playback
+
