@@ -37,6 +37,17 @@ def parse_args():
         type=str,
         default="scripts/per_logs/low_level_hrl",
     )
+    parser.add_argument(
+        "--resume-from",
+        type=str,
+        default=None,
+        help="Path to an existing SB3 checkpoint/model (without or with .zip) to resume from.",
+    )
+    parser.add_argument(
+        "--reset-num-timesteps",
+        action="store_true",
+        help="Reset internal SB3 timestep counter when resuming. Default keeps counting.",
+    )
 
     return parser.parse_args()
 
@@ -93,6 +104,10 @@ def main():
     if not os.path.isabs(tensorboard_log):
         tensorboard_log = os.path.join(os.path.dirname(os.path.dirname(__file__)), tensorboard_log)
 
+    resume_from = args.resume_from
+    if resume_from is not None and not os.path.isabs(resume_from):
+        resume_from = os.path.join(os.path.dirname(os.path.dirname(__file__)), resume_from)
+
     reached_threshold, last_success_rate = policy.train_until_success(
         train_env=train_env,
         eval_env=eval_env,
@@ -102,6 +117,8 @@ def main():
         eval_freq=args.eval_freq,
         eval_episodes=args.eval_episodes,
         tensorboard_log=tensorboard_log,
+        resume_from=resume_from,
+        reset_num_timesteps=args.reset_num_timesteps,
     )
 
     train_env.close()

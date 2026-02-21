@@ -485,8 +485,12 @@ class LowLevelRLPolicy:
         eval_freq: int = 10_000,
         eval_episodes: int = 100,
         tensorboard_log: Optional[str] = None,
+        resume_from: Optional[str] = None,
+        reset_num_timesteps: bool = False,
     ) -> Tuple[bool, float]:
-        if self.model is None:
+        if resume_from is not None:
+            self.load(resume_from, env=train_env)
+        elif self.model is None:
             self._build_model(train_env, tensorboard_log=tensorboard_log)
 
         callback = SuccessThresholdCallback(
@@ -497,7 +501,11 @@ class LowLevelRLPolicy:
             save_path=save_path,
         )
 
-        self.model.learn(total_timesteps=total_timesteps, callback=callback)
+        self.model.learn(
+            total_timesteps=total_timesteps,
+            callback=callback,
+            reset_num_timesteps=reset_num_timesteps,
+        )
 
         if not callback.reached_threshold:
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
