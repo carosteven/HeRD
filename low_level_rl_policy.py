@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from gymnasium import spaces
 from stable_baselines3 import DQN, PPO
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList, CheckpointCallback
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 from environment import (
@@ -487,31 +487,76 @@ class LowLevelRLPolicy:
         tensorboard_log: Optional[str] = None,
         resume_from: Optional[str] = None,
         reset_num_timesteps: bool = False,
+        checkpoint_freq: int = 0,
     ) -> Tuple[bool, float]:
         if resume_from is not None:
             self.load(resume_from, env=train_env)
+            
+            # Fix DQN exploration schedule on resume by setting exploration_rate
+            # to what it should be based on num_timesteps already trained
+            if self.algorithm == "dqn":
+                current_timesteps = self.model.num_timesteps
+                exploration_fraction = 0.2  # Must match _build_model parameter
+                exploration_final_eps = 0.05  # Must match _build_model parameter
+                exploration_initial_eps = 1.0
+                
+                # Calculate total exploration steps across ALL training
+                # (not just this learn() call, which is the SB3 bug)
+                total_exploration_steps = int(exploration_fraction * total_timesteps)
+                
+                # Set epsilon based on where we are in global training progress
+                if current_timesteps >= total_exploration_steps:
+                    # Already past exploration phase, use final epsilon
+                    self.model.exploration_rate = exploration_final_eps
+                else:
+                    # Linearly interpolate based on global progress
+                    progress = current_timesteps / total_exploration_steps
+                    self.model.exploration_rate = (
+                        exploration_initial_eps - (exploration_initial_eps - exploration_final_eps) * progress
+                    )
+                print(f"Resuming DQN from {current_timesteps} steps with epsilon={self.model.exploration_rate:.4f}")
+                
         elif self.model is None:
             self._build_model(train_env, tensorboard_log=tensorboard_log)
 
-        callback = SuccessThresholdCallback(
+        # Success threshold callback for early stopping
+        success_callback = SuccessThresholdCallback(
             eval_env=eval_env,
             eval_episodes=eval_episodes,
             success_threshold=success_threshold,
             eval_freq=eval_freq,
             save_path=save_path,
         )
+        
+        # Combine callbacks
+        callbacks = [success_callback]
+        
+        # Add checkpoint callback if requested
+        if checkpoint_freq > 0:
+            checkpoint_dir = os.path.join(os.path.dirname(save_path), "checkpoints")
+            checkpoint_callback = CheckpointCallback(
+                save_freq=checkpoint_freq,
+                save_path=checkpoint_dir,
+                name_prefix="ckpt",
+                save_replay_buffer=True,  # Important for DQN!
+                save_vecnormalize=True,
+            )
+            callbacks.append(checkpoint_callback)
+            print(f"Saving checkpoints every {checkpoint_freq} steps to {checkpoint_dir}")
+        
+        callback_list = CallbackList(callbacks)
 
         self.model.learn(
             total_timesteps=total_timesteps,
-            callback=callback,
+            callback=callback_list,
             reset_num_timesteps=reset_num_timesteps,
         )
 
-        if not callback.reached_threshold:
+        if not success_callback.reached_threshold:
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             self.model.save(save_path)
 
-        return callback.reached_threshold, callback.last_success_rate
+        return success_callback.reached_threshold, success_callback.last_success_rate
 
     def load(self, model_path: str, env: Optional[gym.Env] = None):
         if self.algorithm == "ppo":

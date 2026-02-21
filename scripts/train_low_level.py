@@ -48,6 +48,12 @@ def parse_args():
         action="store_true",
         help="Reset internal SB3 timestep counter when resuming. Default keeps counting.",
     )
+    parser.add_argument(
+        "--checkpoint-freq",
+        type=int,
+        default=0,
+        help="Save checkpoint every N steps. 0 disables periodic checkpoints (default: 0).",
+    )
 
     return parser.parse_args()
 
@@ -119,6 +125,7 @@ def main():
         tensorboard_log=tensorboard_log,
         resume_from=resume_from,
         reset_num_timesteps=args.reset_num_timesteps,
+        checkpoint_freq=args.checkpoint_freq,
     )
 
     train_env.close()
