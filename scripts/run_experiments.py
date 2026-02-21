@@ -16,6 +16,7 @@ if project_root not in sys.path:
 import argparse
 from scripts.train_rl_policy import DDQNTrainer
 from herd_policy import HeRDPolicy
+from greedy_heuristic_policy import GreedyHeuristicPolicy
 from submodules.BenchNPIN.benchnpin.common.metrics.base_metric import BaseMetric
 from submodules.BenchNPIN.benchnpin.common.utils.utils import DotDict
 
@@ -33,13 +34,25 @@ def main(cfg, job_id):
     
     if cfg.evaluate.eval_mode:
         num_eps = cfg.evaluate.num_eps
-        for model_name, obs_config, diffusion_config in zip(cfg.evaluate.model_names, cfg.evaluate.obs_configs, cfg.evaluate.diffusion_configs):
-            cfg.rl_policy.model_name = model_name
-            cfg.env.obstacle_config = obs_config
-            cfg.diffusion.use_diffusion_policy = diffusion_config
+        planner_types = getattr(cfg.evaluate, 'planner_types', ['herd'] * len(cfg.evaluate.model_names))
 
-            policy = HeRDPolicy(cfg=cfg)
-            policy.evaluate(num_eps=num_eps)
+        for model_name, obs_config, diffusion_config, planner_type in zip(
+            cfg.evaluate.model_names,
+            cfg.evaluate.obs_configs,
+            cfg.evaluate.diffusion_configs,
+            planner_types,
+        ):
+            cfg.env.obstacle_config = obs_config
+
+            if planner_type == 'greedy_heuristic':
+                policy = GreedyHeuristicPolicy(cfg=cfg)
+                policy.evaluate(num_eps=num_eps)
+            else:
+                cfg.rl_policy.model_name = model_name
+                cfg.diffusion.use_diffusion_policy = diffusion_config
+
+                policy = HeRDPolicy(cfg=cfg)
+                policy.evaluate(num_eps=num_eps)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
@@ -70,7 +83,7 @@ if __name__ == '__main__':
         # High level configuration for the box delivery task
         cfg={
             'render': {
-                'show': False,           # if true display the environment
+                'show': True,           # if true display the environment
                 'show_obs': False,       # if true show observation
             },
             'boxes': {
@@ -101,6 +114,7 @@ if __name__ == '__main__':
                 'obs_configs': ['small_empty', 'small_columns', 'large_columns', 'large_divider'], # list of observation configurations
                 'model_names': ['herd_rl_policy', 'herd_rl_policy', 'herd_rl_policy', 'herd_rl_policy'], # list of model names to evaluate
                 'diffusion_configs': [True, True, True, True],
+                'planner_types': ['greedy_heuristic', 'herd', 'herd', 'herd'], # options: 'herd' or 'greedy_heuristic'
             },
             'rewards': {
                 'max_distance_reward': True,
