@@ -22,17 +22,27 @@ def parse_args():
     parser.add_argument("--min-start-goal-distance-m", type=float, default=1.0)
 
     parser.add_argument("--obstacle-config", type=str, default="small_columns")
+    parser.add_argument(
+        "--random-env",
+        action="store_true",
+        help="Enable BoxDeliveryEnv random_env mode (samples large_columns/large_divider each reset), matching train_low_level callback behavior.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="auto")
 
     parser.add_argument("--sleep", type=float, default=0.03, help="Seconds to sleep between rendered steps.")
     parser.add_argument("--show-obs", action="store_true", help="Render observation channels alongside sim.")
     parser.add_argument("--stochastic", action="store_true", help="Use stochastic action sampling instead of deterministic.")
+    parser.add_argument(
+        "--match-train-eval",
+        action="store_true",
+        help="Match SuccessThresholdCallback reset behavior by calling env.reset() without per-episode seed.",
+    )
 
     return parser.parse_args()
 
 
-def make_env_cfg(obstacle_config: str, seed: int, show_obs: bool):
+def make_env_cfg(obstacle_config: str, seed: int, show_obs: bool, random_env: bool):
     return {
         "render": {
             "show": True,
@@ -44,13 +54,16 @@ def make_env_cfg(obstacle_config: str, seed: int, show_obs: bool):
         "misc": {
             "random_seed": seed,
         },
+        "train": {
+            "random_env": random_env,
+        },
     }
 
 
 def main():
     args = parse_args()
 
-    cfg = make_env_cfg(args.obstacle_config, args.seed, args.show_obs)
+    cfg = make_env_cfg(args.obstacle_config, args.seed, args.show_obs, args.random_env)
 
     env = LowLevelNavEnv(
         cfg=cfg,
@@ -88,12 +101,25 @@ def main():
 
     deterministic = not args.stochastic
 
+    print("=" * 80)
+    print("Evaluation setup")
+    print(f"Model: {model_path}")
+    print(f"Algorithm: {selected_algorithm}")
+    print(f"Obstacle config: {args.obstacle_config}")
+    print(f"Random env: {args.random_env}")
+    print(f"Deterministic policy: {deterministic}")
+    print(f"Match train eval reset: {args.match_train_eval}")
+    print("=" * 80)
+
     successes = 0
     episode_rewards = []
 
     try:
         for episode_idx in range(args.episodes):
-            obs, info = env.reset(seed=args.seed + episode_idx)
+            if args.match_train_eval:
+                obs, info = env.reset()
+            else:
+                obs, info = env.reset(seed=args.seed + episode_idx)
             env.render()
 
             done = False

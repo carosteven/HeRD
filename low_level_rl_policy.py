@@ -276,7 +276,7 @@ class LowLevelNavEnv(gym.Env):
 
         if curr_dist < self.goal_threshold_m:
             success = True
-            reward += 10.0
+            reward += 50.0
             terminated = True
 
         if self._episode_steps >= self.max_steps and not terminated:

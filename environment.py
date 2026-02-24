@@ -12,6 +12,7 @@ from pymunk import Vec2d
 from matplotlib import pyplot as plt
 from shapely.geometry import Point
 import math
+import random
 
 # Bench-NPIN related imports
 from submodules.BenchNPIN.benchnpin.common.cost_map import CostMap
@@ -465,6 +466,8 @@ class BoxDeliveryEnv(gym.Env):
                     
         
         # generate obstacles
+        print(self.cfg.env.obstacle_config)
+        print('*'*80)
         if self.cfg.env.obstacle_config == 'small_empty' or self.cfg.env.obstacle_config == 'large_empty':
             pass
         elif self.cfg.env.obstacle_config == 'small_columns':
@@ -584,6 +587,8 @@ class BoxDeliveryEnv(gym.Env):
 
     def reset(self, seed=None, options=None, obs_config=None):
         """Resets the environment to the initial state and returns the initial observation."""
+        if self.cfg.train.random_env:
+            obs_config = random.choice(['large_columns', 'large_divider'])
         if obs_config is not None:
             self.cfg.env.obstacle_config = obs_config
 
