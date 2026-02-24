@@ -36,6 +36,7 @@ class GreedyHeuristicPlanner:
         allow_diagonal: bool = True,
         world_to_grid_fn: Optional[Callable[[Coordinate, Tuple[int, int]], GridIndex]] = None,
         grid_to_world_fn: Optional[Callable[[GridIndex, Tuple[int, int]], Coordinate]] = None,
+        world_bounds: Optional[Tuple[float, float, float, float]] = None,
     ) -> None:
         self.pre_push_distance = float(pre_push_distance)
         self.stance_tolerance = float(stance_tolerance)
@@ -47,6 +48,7 @@ class GreedyHeuristicPlanner:
         self.allow_diagonal = bool(allow_diagonal)
         self.world_to_grid_fn = world_to_grid_fn
         self.grid_to_world_fn = grid_to_world_fn
+        self.world_bounds = world_bounds
 
         if self.grid_resolution <= 0:
             raise ValueError("grid_resolution must be > 0")
@@ -81,10 +83,15 @@ class GreedyHeuristicPlanner:
         receptacle_xy = self._as_xy(receptacle_pos)
         boxes_xy = [self._as_xy(p) for p in box_positions]
 
+        robot_xy = self._clip_world(robot_xy)
+        receptacle_xy = self._clip_world(receptacle_xy)
+        boxes_xy = [self._clip_world(p) for p in boxes_xy]
+
         target_idx = self._select_target_box(robot_xy, boxes_xy, receptacle_xy)
         target_box = boxes_xy[target_idx]
 
         pre_push_stance = self._compute_pre_push_stance(target_box, receptacle_xy)
+        pre_push_stance = self._clip_world(pre_push_stance)
 
         # State B: if robot is already at/near pre-push stance, push directly.
         if self._euclidean(robot_xy, pre_push_stance) <= self.stance_tolerance:
@@ -105,7 +112,7 @@ class GreedyHeuristicPlanner:
         waypoints = [self._grid_to_world(node, obstacle_map.shape) for node in grid_path]
         waypoints[0] = robot_xy
         waypoints[-1] = pre_push_stance
-        return waypoints
+        return [self._clip_world(p) for p in waypoints]
 
     def _select_target_box(
         self,
@@ -315,7 +322,7 @@ class GreedyHeuristicPlanner:
         push_dy = receptacle_pos[1] - target_box[1]
         push_norm = math.hypot(push_dx, push_dy)
         if push_norm < 1e-8:
-            return [robot_pos, target_box]
+            return [self._clip_world(robot_pos), self._clip_world(target_box)]
 
         ux = push_dx / push_norm
         uy = push_dy / push_norm
@@ -324,12 +331,15 @@ class GreedyHeuristicPlanner:
         push_start = (target_box[0] - ux * standoff, target_box[1] - uy * standoff)
         push_end = (receptacle_pos[0] - ux * standoff, receptacle_pos[1] - uy * standoff)
 
+        push_start = self._clip_world(push_start)
+        push_end = self._clip_world(push_end)
+
         segment_1 = self._interpolate_line(robot_pos, push_start, self.push_step)
         segment_2 = self._interpolate_line(push_start, push_end, self.push_step)
 
         if segment_1 and segment_2 and segment_1[-1] == segment_2[0]:
-            return segment_1 + segment_2[1:]
-        return segment_1 + segment_2
+            return [self._clip_world(p) for p in (segment_1 + segment_2[1:])]
+        return [self._clip_world(p) for p in (segment_1 + segment_2)]
 
     @staticmethod
     def _interpolate_line(p0: Coordinate, p1: Coordinate, step: float) -> List[Coordinate]:
@@ -369,3 +379,11 @@ class GreedyHeuristicPlanner:
         if len(p) < 2:
             raise ValueError("Expected coordinate with at least 2 values")
         return (float(p[0]), float(p[1]))
+
+    def _clip_world(self, p: Coordinate) -> Coordinate:
+        if self.world_bounds is None:
+            return p
+        min_x, max_x, min_y, max_y = self.world_bounds
+        x = min(max(float(p[0]), min_x), max_x)
+        y = min(max(float(p[1]), min_y), max_y)
+        return (x, y)

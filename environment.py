@@ -59,7 +59,8 @@ MAX_SEG_INDEX = 8
 MOVE_STEP_SIZE = 0.05
 TURN_STEP_SIZE = np.radians(15)
 
-WAYPOINT_MOVING_THRESHOLD = 0.6
+# WAYPOINT_MOVING_THRESHOLD = 0.6
+WAYPOINT_MOVING_THRESHOLD = 0.15
 WAYPOINT_TURNING_THRESHOLD = np.radians(10)
 NOT_MOVING_THRESHOLD = 0.005
 NOT_TURNING_THRESHOLD = np.radians(0.05)
@@ -690,6 +691,7 @@ class BoxDeliveryEnv(gym.Env):
                     self.render()
                     # input()
             robot_distance, robot_turn_angle = self.execute_robot_path(robot_initial_position, robot_initial_heading, path)
+            # input()
 
         # step the simulation until everything is still
         self.step_simulation_until_still()
