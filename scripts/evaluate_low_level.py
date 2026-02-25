@@ -1,5 +1,6 @@
 import argparse
 import os
+import random
 import sys
 import time
 
@@ -12,7 +13,7 @@ from low_level_rl_policy import LowLevelNavEnv, LowLevelRLPolicy
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Visually evaluate a trained low-level HRL navigation policy.")
-    parser.add_argument("--model-path", type=str, default="models/rl_models/low_level_hrl_policy")
+    parser.add_argument("--model-path", type=str, default="models/rl_models/low_level_rl_policy")
     parser.add_argument("--algorithm", type=str, default="auto", choices=["auto", "ppo", "dqn"])
 
     parser.add_argument("--episodes", type=int, default=10)
@@ -21,7 +22,7 @@ def parse_args():
     parser.add_argument("--goal-threshold-m", type=float, default=0.2)
     parser.add_argument("--min-start-goal-distance-m", type=float, default=1.0)
 
-    parser.add_argument("--obstacle-config", type=str, default="small_columns")
+    parser.add_argument("--obstacle-config", type=str, default="large_columns")
     parser.add_argument(
         "--random-env",
         action="store_true",
@@ -33,6 +34,12 @@ def parse_args():
     parser.add_argument("--sleep", type=float, default=0.03, help="Seconds to sleep between rendered steps.")
     parser.add_argument("--show-obs", action="store_true", help="Render observation channels alongside sim.")
     parser.add_argument("--stochastic", action="store_true", help="Use stochastic action sampling instead of deterministic.")
+    parser.add_argument(
+        "--exploration-rate",
+        type=float,
+        default=0.0,
+        help="Epsilon-greedy exploration rate during evaluation (0.0-1.0). Example: 0.02 = 2%% random actions.",
+    )
     parser.add_argument(
         "--match-train-eval",
         action="store_true",
@@ -62,6 +69,8 @@ def make_env_cfg(obstacle_config: str, seed: int, show_obs: bool, random_env: bo
 
 def main():
     args = parse_args()
+    if not (0.0 <= args.exploration_rate <= 1.0):
+        raise ValueError("--exploration-rate must be between 0.0 and 1.0")
 
     cfg = make_env_cfg(args.obstacle_config, args.seed, args.show_obs, args.random_env)
 
@@ -108,6 +117,7 @@ def main():
     print(f"Obstacle config: {args.obstacle_config}")
     print(f"Random env: {args.random_env}")
     print(f"Deterministic policy: {deterministic}")
+    print(f"Evaluation exploration rate: {args.exploration_rate}")
     print(f"Match train eval reset: {args.match_train_eval}")
     print("=" * 80)
 
@@ -126,9 +136,14 @@ def main():
             truncated = False
             ep_reward = 0.0
             ep_steps = 0
+            random_actions = 0
 
             while not (done or truncated):
-                action = policy.act(obs, deterministic=deterministic)
+                if random.random() < args.exploration_rate:
+                    action = env.action_space.sample()
+                    random_actions += 1
+                else:
+                    action = policy.act(obs, deterministic=deterministic)
                 obs, reward, done, truncated, info = env.step(action)
                 ep_reward += reward
                 ep_steps += 1
@@ -146,6 +161,7 @@ def main():
                 f"success={success} | "
                 f"steps={ep_steps} | "
                 f"reward={ep_reward:.2f} | "
+                f"random_actions={random_actions} | "
                 f"final_dist={float(info.get('distance_to_goal', -1.0)):.3f}"
             )
 
