@@ -115,8 +115,7 @@ env:
 
 misc:
   ministep_size: 2.5
-  # inactivity_cutoff: 100
-  inactivity_cutoff: 1000 # For greedy heuristic
+  inactivity_cutoff: 100
   random_seed: 42
 
 rewards:

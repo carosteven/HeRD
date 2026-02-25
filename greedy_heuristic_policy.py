@@ -79,6 +79,55 @@ class GreedyHeuristicPolicy:
     def _euclidean(p0: Tuple[float, float], p1: Tuple[float, float]) -> float:
         return math.hypot(p1[0] - p0[0], p1[1] - p0[1])
 
+    def _path_length_xy(self, path_xy: Sequence[Tuple[float, float]]) -> float:
+        if len(path_xy) <= 1:
+            return 0.0
+        return sum(self._euclidean(path_xy[i - 1], path_xy[i]) for i in range(1, len(path_xy)))
+
+    def _select_reachable_target_box(
+        self,
+        robot_pos: Tuple[float, float],
+        box_positions: Sequence[Tuple[float, float]],
+        receptacle_pos: Tuple[float, float],
+    ) -> Tuple[float, float]:
+        if len(box_positions) == 0:
+            raise ValueError("Expected at least one box position")
+
+        best_box = box_positions[0]
+        best_score = float("inf")
+
+        for box in box_positions:
+            pre_push_stance = self._compute_pre_push_stance(box, receptacle_pos, self.planner.pre_push_distance)
+            pre_push_stance = self._clip_to_bounds(pre_push_stance)
+
+            route: Optional[List[Tuple[float, float]]] = None
+            try:
+                candidate_route = self.env.position_controller.shortest_path(
+                    source_position=robot_pos,
+                    target_position=pre_push_stance,
+                    check_straight=False,
+                    configuration_space=self.env.position_controller.configuration_space_thin,
+                )
+                if len(candidate_route) >= 2:
+                    route = [(float(p[0]), float(p[1])) for p in candidate_route]
+            except Exception:
+                route = None
+
+            if route is None:
+                continue
+
+            transit_cost = self._path_length_xy(route)
+            delivery_cost = self._euclidean(box, receptacle_pos)
+            score = transit_cost + delivery_cost
+
+            if score < best_score:
+                best_score = score
+                best_box = box
+
+        if best_score == float("inf"):
+            return self._select_target_box(robot_pos, box_positions, receptacle_pos)
+        return best_box
+
     @staticmethod
     def _select_target_box(
         robot_pos: Tuple[float, float],
@@ -123,7 +172,7 @@ class GreedyHeuristicPolicy:
         if len(box_positions) == 0:
             return [robot_pos, receptacle_pos]
 
-        target_box = self._select_target_box(robot_pos, box_positions, receptacle_pos)
+        target_box = self._select_reachable_target_box(robot_pos, box_positions, receptacle_pos)
         pre_push_stance = self._compute_pre_push_stance(
             target_box,
             receptacle_pos,
@@ -135,8 +184,8 @@ class GreedyHeuristicPolicy:
             route = self.env.position_controller.shortest_path(
                 source_position=robot_pos,
                 target_position=pre_push_stance,
-                check_straight=True,
-                configuration_space=self.env.position_controller.configuration_space,
+                check_straight=False,
+                configuration_space=self.env.position_controller.configuration_space_thin,
             )
             if len(route) >= 2:
                 return [(float(p[0]), float(p[1])) for p in route]
@@ -144,6 +193,78 @@ class GreedyHeuristicPolicy:
             pass
 
         return [robot_pos, pre_push_stance]
+
+    def _plan_transit_to_target(
+        self,
+        robot_pos: Tuple[float, float],
+        target_box: Tuple[float, float],
+        receptacle_pos: Tuple[float, float],
+    ) -> List[Tuple[float, float]]:
+        robot_pos = self._clip_to_bounds(robot_pos)
+        target_box = self._clip_to_bounds(target_box)
+        receptacle_pos = self._clip_to_bounds(receptacle_pos)
+
+        pre_push_stance = self._compute_pre_push_stance(
+            target_box,
+            receptacle_pos,
+            self.planner.pre_push_distance,
+        )
+        pre_push_stance = self._clip_to_bounds(pre_push_stance)
+
+        try:
+            route = self.env.position_controller.shortest_path(
+                source_position=robot_pos,
+                target_position=pre_push_stance,
+                check_straight=False,
+                configuration_space=self.env.position_controller.configuration_space_thin,
+            )
+            if len(route) >= 2:
+                return [(float(p[0]), float(p[1])) for p in route]
+        except Exception:
+            pass
+
+        return [robot_pos, pre_push_stance]
+
+    def _plan_transit_reachable_path(
+        self,
+        robot_pos: Tuple[float, float],
+        box_positions: Sequence[Tuple[float, float]],
+        receptacle_pos: Tuple[float, float],
+        obstacle_map: np.ndarray,
+    ) -> Tuple[List[Tuple[float, float]], Optional[Tuple[float, float]]]:
+        if len(box_positions) == 0:
+            return [robot_pos, receptacle_pos], None
+
+        candidate_boxes = sorted(
+            box_positions,
+            key=lambda b: self._euclidean(robot_pos, b) + self._euclidean(b, receptacle_pos),
+        )
+
+        best_fallback_path: Optional[List[Tuple[float, float]]] = None
+        best_fallback_box: Optional[Tuple[float, float]] = None
+
+        for box in candidate_boxes:
+            candidate_path = self.planner.plan(
+                robot_pos=robot_pos,
+                box_positions=[box],
+                receptacle_pos=receptacle_pos,
+                obstacle_map=obstacle_map,
+            )
+            candidate_length = self._path_length_xy(candidate_path)
+
+            if best_fallback_path is None:
+                best_fallback_path = candidate_path
+                best_fallback_box = box
+
+            if len(candidate_path) >= 2 and candidate_length >= 0.35:
+                return candidate_path, box
+
+        if best_fallback_path is not None and best_fallback_box is not None:
+            return best_fallback_path, best_fallback_box
+
+        fallback_path = self._fallback_path(robot_pos, box_positions, receptacle_pos)
+        fallback_target = self._select_target_box(robot_pos, box_positions, receptacle_pos)
+        return fallback_path, fallback_target
 
     def _clip_to_bounds(self, p: Tuple[float, float]) -> Tuple[float, float]:
         min_x, max_x, min_y, max_y = self.world_bounds
@@ -183,7 +304,7 @@ class GreedyHeuristicPolicy:
                 )
 
                 box_positions = self._extract_box_positions(info["box_obs"])
-                obstacle_map = (1.0 - self.env.position_controller.configuration_space).astype(np.uint8)
+                obstacle_map = (1.0 - self.env.position_controller.configuration_space_thin).astype(np.uint8)
 
                 # Track the same target if possible; otherwise reselect greedily.
                 if len(box_positions) == 0:
@@ -194,13 +315,13 @@ class GreedyHeuristicPolicy:
                     box_not_moving_steps = 0
                 else:
                     if current_target_box is None:
-                        current_target_box = self._select_target_box(robot_pos, box_positions, receptacle_pos)
+                        current_target_box = self._select_reachable_target_box(robot_pos, box_positions, receptacle_pos)
                         prev_target_box_pos = current_target_box
                         box_not_moving_steps = 0
                     else:
                         nearest_result = self._nearest_box(current_target_box, box_positions)
                         if nearest_result is None or nearest_result[1] > self.target_track_lost_distance:
-                            current_target_box = self._select_target_box(robot_pos, box_positions, receptacle_pos)
+                            current_target_box = self._select_reachable_target_box(robot_pos, box_positions, receptacle_pos)
                             mode = "transit"
                             pending_path_xy = []
                             prev_target_box_pos = current_target_box
@@ -249,17 +370,17 @@ class GreedyHeuristicPolicy:
                 else:
                     # Transit mode uses queue/chunking and replans when exhausted.
                     if len(pending_path_xy) <= 1:
-                        path_xy = self.planner.plan(
+                        path_xy, selected_target = self._plan_transit_reachable_path(
                             robot_pos=robot_pos,
                             box_positions=box_positions,
                             receptacle_pos=receptacle_pos,
                             obstacle_map=obstacle_map,
                         )
+                        if selected_target is not None:
+                            current_target_box = selected_target
 
                         # Guard against degenerate planner output.
-                        path_length = 0.0
-                        for i in range(1, len(path_xy)):
-                            path_length += self._euclidean(path_xy[i - 1], path_xy[i])
+                        path_length = self._path_length_xy(path_xy)
                         if len(path_xy) < 2 or path_length < 0.35:
                             path_xy = self._fallback_path(robot_pos, box_positions, receptacle_pos)
 
@@ -336,6 +457,15 @@ class GreedyHeuristicPolicy:
         if len(path_xy) == 1:
             x, y = path_xy[0]
             return np.array([[x, y, current_heading], [x, y, current_heading]], dtype=np.float32)
+
+        # Preserve short-path corners (especially 3-point transit chunks) since
+        # dropping the middle point can create a blocked direct segment that
+        # later collapses during feasibility conditioning.
+        if len(path_xy) <= 3:
+            path_xy_np = np.asarray(path_xy, dtype=np.float32)
+            if path_xy_np.shape[0] == 1:
+                path_xy_np = np.vstack([path_xy_np, path_xy_np])
+            return self.get_path_headings(path_xy_np, initial_heading=float(current_heading))
 
         # Remove waypoints that are too close, preserving first/last points.
         pruned_xy = [tuple(path_xy[0])]

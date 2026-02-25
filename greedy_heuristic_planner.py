@@ -16,9 +16,9 @@ class GreedyHeuristicPlanner:
     """
     Purely classical heuristic TAMP baseline planner (no machine learning).
 
-    Finite-state behavior:
-      - State A (Transit): A* to pre-push stance using clearance-aware cost map.
-      - State B (Pushing): Straight-line path through target box to receptacle.
+        Finite-state behavior:
+            - State A (Transit): A* to pre-push stance using clearance-aware cost map.
+            - State B (Pushing): Straight-line path robot -> target box -> receptacle.
 
     Inputs are world coordinates, and `obstacle_map` is a 2D binary occupancy grid.
     Returned path is a list of `(x, y)` waypoints for direct loop integration.
@@ -111,7 +111,6 @@ class GreedyHeuristicPlanner:
 
         waypoints = [self._grid_to_world(node, obstacle_map.shape) for node in grid_path]
         waypoints[0] = robot_xy
-        waypoints[-1] = pre_push_stance
         return [self._clip_world(p) for p in waypoints]
 
     def _select_target_box(
@@ -230,6 +229,13 @@ class GreedyHeuristicPlanner:
                 if closed[ni, nj] or not np.isfinite(cost_map[ni, nj]):
                     continue
 
+                # For diagonal moves, disallow corner-cutting through blocked cells.
+                if step_dist > 1.0:
+                    di = ni - i
+                    dj = nj - j
+                    if not np.isfinite(cost_map[i + di, j]) or not np.isfinite(cost_map[i, j + dj]):
+                        continue
+
                 tentative_g = g_score[i, j] + step_dist * float(cost_map[ni, nj])
                 if tentative_g < g_score[ni, nj]:
                     g_score[ni, nj] = tentative_g
@@ -316,26 +322,13 @@ class GreedyHeuristicPlanner:
         target_box: Coordinate,
         receptacle_pos: Coordinate,
     ) -> List[Coordinate]:
-        # Robot-center push trajectory: stay at a fixed standoff behind the box
-        # along the push direction (box -> receptacle).
-        push_dx = receptacle_pos[0] - target_box[0]
-        push_dy = receptacle_pos[1] - target_box[1]
-        push_norm = math.hypot(push_dx, push_dy)
-        if push_norm < 1e-8:
-            return [self._clip_world(robot_pos), self._clip_world(target_box)]
+        # Strict comparison path: two straight segments robot -> box -> receptacle.
+        robot = self._clip_world(robot_pos)
+        box = self._clip_world(target_box)
+        receptacle = self._clip_world(receptacle_pos)
 
-        ux = push_dx / push_norm
-        uy = push_dy / push_norm
-        standoff = self.pre_push_distance
-
-        push_start = (target_box[0] - ux * standoff, target_box[1] - uy * standoff)
-        push_end = (receptacle_pos[0] - ux * standoff, receptacle_pos[1] - uy * standoff)
-
-        push_start = self._clip_world(push_start)
-        push_end = self._clip_world(push_end)
-
-        segment_1 = self._interpolate_line(robot_pos, push_start, self.push_step)
-        segment_2 = self._interpolate_line(push_start, push_end, self.push_step)
+        segment_1 = self._interpolate_line(robot, box, self.push_step)
+        segment_2 = self._interpolate_line(box, receptacle, self.push_step)
 
         if segment_1 and segment_2 and segment_1[-1] == segment_2[0]:
             return [self._clip_world(p) for p in (segment_1 + segment_2[1:])]

@@ -1,300 +1,167 @@
-# Greedy Heuristic Policy - How It Works
+# Greedy Heuristic Policy: Current Behavior
 
-This document explains the logic and implementation of the greedy heuristic baseline policy for the box delivery task.
+This document reflects the **current implementation** of the greedy heuristic baseline in:
 
----
+- `greedy_heuristic_policy.py`
+- `greedy_heuristic_planner.py`
 
-## Overview
-
-The greedy heuristic policy is a **classical (non-ML) baseline** that uses A* pathfinding and a finite-state machine (FSM) to navigate a robot to collect boxes and deliver them to a receptacle. Unlike the learned diffusion policy, this approach uses traditional planning algorithms and geometric reasoning.
-
-### Key Components
-
-1. **GreedyHeuristicPlanner** - Low-level path planner using A* search
-2. **GreedyHeuristicPolicy** - High-level FSM controller that orchestrates planning and execution
+It is intentionally code-aligned (not conceptual-only).
 
 ---
 
-## High-Level Architecture
+## 1) High-level structure
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                 GreedyHeuristicPolicy                   │
-│                                                         │
-│  ┌─────────────┐         ┌─────────────┐                │
-│  │   Transit   │ ◄─────► │    Push     │                │
-│  │    Mode     │         │    Mode     │                │
-│  └─────────────┘         └─────────────┘                │
-│                                                         │
-│  Uses: GreedyHeuristicPlanner (A* search)               │
-└─────────────────────────────────────────────────────────┘
-```
+The baseline has two layers:
+
+1. **`GreedyHeuristicPlanner`**
+   - A* transit planner in grid space
+   - Straight-line push path generator in world space
+
+2. **`GreedyHeuristicPolicy`**
+   - Episode loop / FSM (`transit` vs `push`)
+   - Target tracking and mode switching
+   - Waypoint chunking + feasibility conditioning
 
 ---
 
-## The Finite-State Machine (FSM)
+## 2) Mode logic (FSM)
 
-The policy operates in two distinct modes:
+### Transit mode
+- Purpose: move to a pre-push stance for a selected target box.
+- Entry: default mode, or after push exits.
+- Replan: when queued path is exhausted.
 
-### 🚶 **Transit Mode**
-**Purpose:** Navigate to a box without pushing anything
+### Push mode
+- Purpose: push target toward receptacle.
+- Enter when robot-target distance ≤ `push_engage_distance`.
+- Exit when either:
+  - robot-target distance ≥ `push_release_distance` and at least `push_mode_min_steps` elapsed, or
+  - tracked box displacement is below threshold for 5 consecutive steps.
 
-**When active:**
-- Robot is far from target box (> 0.35m)
-- No active push in progress
-
-**Behavior:**
-- Use A* to plan path to "pre-push stance" (position behind box)
-- Avoid obstacles and other boxes
-- Once close enough to target box, switch to Push mode
-
-### 📦 **Push Mode**  
-**Purpose:** Push the target box toward the receptacle
-
-**When active:**
-- Robot is close to target box (≤ 0.35m)
-- Maintains contact while pushing
-
-**Behavior:**
-- Generate straight-line push path: robot → box → receptacle
-- Maintain fixed standoff distance behind box (robot center stays behind box)
-- Monitor box movement to detect stalled pushes
-- Exit when:
-  - Box gets too far from robot (> 0.75m) - lost contact
-  - Box hasn't moved for 5 consecutive steps - stuck
-  - Minimum push duration met (≥ 3 steps)
-
-### Hysteresis
-
-The FSM uses **hysteresis** to prevent rapid mode flapping:
-- Enter push: distance ≤ 0.35m
-- Exit push: distance ≥ 0.75m OR box stalled OR target lost
-
-This creates a "dead band" where the robot stays in push mode even if distance varies slightly.
+### Box-motion stall check
+- During push, displacement is measured between consecutive tracked target positions.
+- If displacement < `box_movement_threshold` (0.01), increment stall counter.
+- Stall counter ≥ 5 forces exit to transit.
 
 ---
 
-## Path Planning Details
+## 3) Target selection (current)
 
-### Transit Planning (A* Search)
+There are two layers of selection:
 
-**Goal:** Find obstacle-avoiding path to pre-push stance
+1. **Reachable pre-filter (`_select_reachable_target_box`)**
+   - For each candidate box, compute pre-push stance.
+   - Query `shortest_path` on `configuration_space_thin`.
+   - Score feasible candidates by:
+     - transit route length + box→receptacle Euclidean distance.
+   - Fallback to pure Euclidean greedy if no feasible route exists.
 
-**Steps:**
-1. **Select target box** - Choose nearest box using greedy heuristic: `distance(robot, box) + distance(box, receptacle)`
+2. **Transit replan robustness (`_plan_transit_reachable_path`)**
+   - Sort candidate boxes by Euclidean greedy score.
+   - For each candidate, call planner transit with that single box.
+   - Pick first non-degenerate path (`len >= 2` and length ≥ 0.35).
+   - If none pass, fall back to best candidate/fallback path.
 
-2. **Compute pre-push stance** - Position robot should reach before pushing:
-   ```
-   push_direction = (box_pos - receptacle_pos) / ||box_pos - receptacle_pos||
-   pre_push_stance = box_pos + push_direction * standoff_distance
-   ```
-   This places robot **behind** the box relative to push direction.
-
-3. **Build cost map:**
-   - Obstacles: infinite cost
-   - Free space: base cost = 1.0
-   - Near other boxes: add radial penalty (expensive but traversable)
-   
-4. **Run A* from robot to pre-push stance** using cost map
-
-5. **Convert grid path to world coordinates**
-
-### Push Planning (Straight Line)
-
-**Goal:** Generate path that maintains robot-box-receptacle alignment
-
-**Calculation:**
-```python
-push_direction = (receptacle_pos - box_pos) / ||receptacle_pos - box_pos||
-push_start = box_pos - push_direction * standoff
-push_end = receptacle_pos - push_direction * standoff
-
-path = [robot_pos → push_start → push_end]
-```
-
-This keeps robot at fixed offset behind box throughout push.
+This is the main anti-spin stability improvement: avoid repeatedly committing to a bad transit target/path.
 
 ---
 
-## Box Movement Detection
+## 4) Transit planning details (`GreedyHeuristicPlanner.plan`)
 
-To prevent the robot from "pushing air" when it misses a box:
+Given robot, boxes, receptacle, and obstacle map:
 
-### Tracking Logic
-```python
-if mode == "push":
-    box_displacement = distance(prev_box_pos, current_box_pos)
-    
-    if box_displacement < 0.01m:  # Movement threshold
-        box_not_moving_steps += 1
-    else:
-        box_not_moving_steps = 0
-    
-    if box_not_moving_steps >= 5:
-        # Box is stuck - exit push mode
-        mode = "transit"
-```
+1. Choose planner target box by Euclidean greedy score.
+2. Compute pre-push stance behind target relative to receptacle.
+3. Build cost map:
+   - obstacles → `inf`
+   - free cells → base cost 1
+   - radial penalties around non-target boxes
+4. Run A* from nearest free start to nearest free goal.
+5. Convert grid path back to world waypoints.
 
-### Why This Matters
-Without movement detection:
-- Robot could continue "pushing" after missing box
-- Wastes time following a stale push trajectory
-- Box never reaches receptacle
-
-With movement detection:
-- If box doesn't move despite robot pushing, exit push mode
-- Replan from transit mode to recover
-- Improves robustness to planning errors
+### Important current behavior
+- Transit obstacle map comes from **`configuration_space_thin`** in policy.
+- Diagonal corner-cutting is disallowed in A*.
+- Planner no longer force-overwrites final waypoint to exact pre-push stance; it keeps the routed grid-derived endpoint.
 
 ---
 
-## Path Feasibility Pipeline
+## 5) Push path details (current)
 
-Both transit and push paths undergo the same post-processing:
+`_build_push_path` now constructs a strict 2-segment line:
 
-### 1. Feasibility Check (`_ensure_path_feasibility_xy`)
+- `robot -> target_box`
+- `target_box -> receptacle`
 
-**Problem:** Planner might generate paths with segments that pass through obstacles
+with interpolation step `push_step`.
 
-**Solution:**
-- Check each path segment using line-of-sight in configuration space
-- If segment is blocked:
-  - Add midpoint between endpoints
-  - Recursively check sub-segments
-  - Project blocked points to nearest valid space using `closest_valid_cspace_indices()`
-
-### 2. Distance Pruning (`_prune_xy_by_distance`)
-
-**Problem:** Too many waypoints close together
-
-**Solution:**
-- Remove waypoints closer than `min_waypoint_spacing` (0.2m)
-- Always keep first and last waypoints
-
-### 3. Heading Calculation (`get_path_headings`)
-
-**Problem:** Controller needs (x, y, θ) waypoints
-
-**Solution:**
-- Compute heading for each waypoint as direction to next waypoint:
-  ```python
-  heading[i] = atan2(y[i+1] - y[i], x[i+1] - x[i])
-  ```
-- First waypoint uses current robot heading
+Note: this is generated as a straight path, but the policy still runs feasibility conditioning afterward, so post-processed commands may deviate if collision repair is needed.
 
 ---
 
-## Execution Loop
+## 6) Waypoint processing pipeline
 
-Each timestep, the policy:
+Each control step:
 
-1. **Get current state:**
-   - Robot pose (x, y, θ)
-   - Box positions (from vertices observations)
-   - Receptacle position
-   - Obstacle map
+1. Build/update `pending_path_xy` (push or transit).
+2. Chunk up to `max_waypoints_per_step` points.
+3. Convert XY chunk to pose waypoints `(x, y, heading)`.
+4. Anchor first waypoint to current robot position.
+5. Run feasibility pipeline.
+6. Send resulting path to environment/controller.
 
-2. **Track target box:**
-   - If no target: select greedily
-   - If have target: find nearest box to last target position
-   - If target lost (>1.0m away): reselect greedily
+### Short-path corner preservation
 
-3. **Update FSM mode:**
-   - Check distance to target box
-   - Apply hysteresis thresholds
-   - Update push mode step counter
-   - Check box movement (in push mode)
-
-4. **Generate path:**
-   - **Push mode:** Recompute push path from current positions every step
-   - **Transit mode:** Use queued path; replan when queue depleted
-
-5. **Chunk path:**
-   - Take up to 10 waypoints from path
-   - Convert to (x, y, θ) format
-   - Anchor first waypoint at current robot position
-
-6. **Apply feasibility pipeline:**
-   - Ensure no collisions
-   - Prune dense waypoints
-   - Calculate headings
-
-7. **Send to controller:**
-   - Low-level MPC controller tracks waypoints
-   - Return action, reward, done
-
-8. **Update queue:**
-   - Remove consumed waypoints
-   - Keep 1 waypoint overlap for continuity
+In `_xy_path_to_pose_path`:
+- For path length ≤ 3, waypoints are preserved (no distance-pruning).
+- This prevents dropping critical middle corners that can create blocked direct segments.
 
 ---
 
-## Key Parameters
+## 7) Feasibility conditioning (applied in both modes)
 
-### FSM Thresholds
-- `push_engage_distance = 0.35m` - Enter push mode
-- `push_release_distance = 0.75m` - Exit push mode
-- `push_mode_min_steps = 3` - Minimum duration in push
-- `box_movement_threshold = 0.01m` - Box displacement to count as "moving"
-- `target_track_lost_distance = 1.0m` - Max distance to track same box
+`_apply_feasibility_pipeline`:
 
-### Geometric Constants
-- `push_standoff = robot_radius + box_half_width + 0.05m` - Robot offset behind box
-- `min_waypoint_spacing = 0.2m` - Minimum distance between waypoints
-- `push_step = 0.12m` - Interpolation resolution for push paths
+1. `._ensure_path_feasibility_xy`
+   - Segment LOS check against `configuration_space_thin`.
+   - If blocked, attempt midpoint subdivision and projection via nearest valid c-space index.
+2. `._prune_xy_by_distance`
+   - Remove dense interior points.
+3. Recompute headings with `get_path_headings`.
 
-### Planning Parameters
-- `clearance_penalty = 50.0` - Cost multiplier near non-target boxes
-- `clearance_radius = 0.7m` - Radius of penalty zone around boxes
-- `allow_diagonal = True` - Use 8-connected grid for A*
+This keeps push/transit conditioning consistent.
 
 ---
 
-## Edge Cases Handled
+## 8) Key parameters used by current implementation
 
-### 1. **Target Box Lost**
-- If tracked box moves >1.0m away, reselect target greedily
-- Invalidate queued path and replan
+- `min_waypoint_spacing = 0.2`
+- `max_waypoints_per_step = 10`
+- `push_step = 0.12`
+- `target_track_lost_distance = 1.0`
+- `push_engage_distance = robot_radius + box_half_extent + 0.35`
+- `push_release_distance = robot_radius + box_half_extent + 0.75`
+- `push_mode_min_steps = 3`
+- `box_movement_threshold = 0.01`
 
-### 2. **Box Not Moving (Stalled Push)**
-- Count consecutive steps where box displacement < 0.01m
-- If count ≥ 5, exit push mode and replan from transit
+Planner defaults used by policy construction:
 
-### 3. **Degenerate Planner Output**
-- If A* returns path with <2 waypoints or <0.35m total length
-- Fall back to `shortest_path()` directly to pre-push stance
-
-### 4. **No Boxes Remaining**
-- Set `current_target_box = None`
-- Switch to transit mode
-- Plan direct path to receptacle
-
-### 5. **Blocked Start/Goal in A***
-- Use BFS to find nearest free cell in cost map
-- Start/end A* search from/to nearest valid location
+- `stance_tolerance = 0.25`
+- `clearance_penalty = 50.0`
+- `clearance_radius = 0.7`
+- `allow_diagonal = True` (with corner-cut guard)
 
 ---
 
-## Differences from Diffusion Policy
+## 9) Summary (current)
 
-| Aspect | Greedy Heuristic | Diffusion Policy |
-|--------|------------------|------------------|
-| **Planning** | Explicit A* search | Learned trajectory distribution |
-| **Coordination** | Geometric pre-push stance | Learned approach behaviors |
-| **Robustness** | FSM with explicit guards | Implicit from training data |
-| **Computation** | Replans every step or when queue empty | Single forward pass per step |
-| **Interpretability** | Fully transparent logic | Black-box neural network |
-| **Adaptability** | Fixed geometric rules | Can generalize to new scenarios |
+The current greedy heuristic baseline:
 
----
+- Uses reachable-aware target selection.
+- Replans transit with candidate screening to avoid degenerate paths.
+- Uses A* transit on thin c-space with diagonal corner-cut protection.
+- Uses straight robot→box→receptacle push generation.
+- Applies one shared feasibility pipeline in both transit and push.
+- Uses push stall detection to exit failed pushes.
 
-## Summary
-
-The greedy heuristic policy is a classical baseline that:
-1. **Selects** the nearest box using a simple distance heuristic
-2. **Plans** collision-free paths using A* search with clearance penalties
-3. **Executes** using a 2-mode FSM (transit vs. push)
-4. **Monitors** box movement to detect and recover from failed pushes
-5. **Processes** all paths through feasibility checks for consistency
-
-It provides a strong non-learned baseline for comparison with learned policies like diffusion, demonstrating what can be achieved with traditional planning alone.
+This is the implementation state to use for comparisons and debugging.

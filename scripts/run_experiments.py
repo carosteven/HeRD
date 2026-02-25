@@ -83,7 +83,7 @@ if __name__ == '__main__':
         # High level configuration for the box delivery task
         cfg={
             'render': {
-                'show': False,           # if true display the environment
+                'show': True,           # if true display the environment
                 'show_obs': False,       # if true show observation
             },
             'boxes': {
@@ -95,6 +95,7 @@ if __name__ == '__main__':
             },
             'misc': {
                 'random_seed': 1,
+                'inactivity_cutoff': 200
             },
             'rl_policy': {
                 'model_path': 'models/rl_models',
@@ -111,7 +112,7 @@ if __name__ == '__main__':
             'evaluate': {
                 'eval_mode': True,
                 'num_eps': 20,
-                'obs_configs': ['small_empty', 'small_columns', 'large_columns', 'large_divider'], # list of observation configurations
+                'obs_configs': ['large_columns', 'small_columns', 'large_columns', 'large_divider'], # list of observation configurations
                 'model_names': ['herd_rl_policy', 'herd_rl_policy', 'herd_rl_policy', 'herd_rl_policy'], # list of model names to evaluate
                 'diffusion_configs': [True, True, True, True],
                 'planner_types': ['greedy_heuristic', 'greedy_heuristic', 'greedy_heuristic', 'greedy_heuristic'], # options: 'herd' or 'greedy_heuristic'
