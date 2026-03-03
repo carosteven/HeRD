@@ -646,12 +646,13 @@ class BoxDeliveryEnv(gym.Env):
         return self.observation, info
     
 
-    def step(self, path, action=None):
+    def step(self, path, action=None, already_moved=False, robot_initial_pose=None):
         """Executes one time step in the environment and returns the result."""
         self.t += 1
         self.dp = None
 
-        self.robot_hit_obstacle = False
+        if not already_moved:
+            self.robot_hit_obstacle = False
         robot_boxes = 0
         robot_reward = 0
 
@@ -661,8 +662,12 @@ class BoxDeliveryEnv(gym.Env):
         # get initial state
 
         # initial pose
-        robot_initial_position, robot_initial_heading = self.robot.body.position, self.restrict_heading_range(self.robot.body.angle)
-        robot_initial_position = list(robot_initial_position)  
+        if already_moved and robot_initial_pose is not None:
+            robot_initial_position = [float(robot_initial_pose[0]), float(robot_initial_pose[1])]
+            robot_initial_heading = float(robot_initial_pose[2])
+        else:
+            robot_initial_position, robot_initial_heading = self.robot.body.position, self.restrict_heading_range(self.robot.body.angle)
+            robot_initial_position = list(robot_initial_position)
 
         # store initial box distances for partial reward calculation
         initial_box_distances = {}
@@ -690,11 +695,17 @@ class BoxDeliveryEnv(gym.Env):
             robot_distance = self.distance(robot_initial_position, robot_position)
 
         else:
-            if self.cfg.render.show:
+            if not already_moved:
+                if self.cfg.render.show:
                     self.renderer.update_path(path)
                     self.render()
                     # input()
-            robot_distance, robot_turn_angle = self.execute_robot_path(robot_initial_position, robot_initial_heading, path)
+                robot_distance, robot_turn_angle = self.execute_robot_path(robot_initial_position, robot_initial_heading, path)
+            else:
+                robot_position, robot_heading = self.robot.body.position, self.restrict_heading_range(self.robot.body.angle)
+                robot_position = list(robot_position)
+                robot_distance = self.distance(robot_initial_position, robot_position)
+                robot_turn_angle = self.heading_difference(robot_initial_heading, robot_heading)
 
         # step the simulation until everything is still
         self.step_simulation_until_still()

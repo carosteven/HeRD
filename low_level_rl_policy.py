@@ -108,24 +108,35 @@ class LowLevelNavEnv(gym.Env):
         return bool(np.isclose(value, obstacle_value, atol=1e-6))
 
     def _is_valid_position(self, position_xy: np.ndarray, include_boxes: bool = True) -> bool:
+        self.base_env.update_global_overhead_map()
+
         i, j = self.base_env.position_to_pixel_indices(
             position_xy[0],
             position_xy[1],
-            self.base_env.configuration_space.shape,
+            self.base_env.global_overhead_map.shape,
         )
-        if self.base_env.configuration_space[i, j] <= 0.5:
+        h, w = self.base_env.global_overhead_map.shape
+        if i < 0 or i >= h or j < 0 or j >= w:
             return False
 
-        self.base_env.update_global_overhead_map()
         if self._is_blocked_by_semantics(position_xy, include_boxes=include_boxes):
             return False
 
         return True
 
     def _sample_valid_position(self) -> np.ndarray:
-        free_indices = np.argwhere(self.base_env.configuration_space > 0.5)
+        self.base_env.update_global_overhead_map()
+
+        obstacle_value = OBSTACLE_SEG_INDEX / MAX_SEG_INDEX
+        box_value = BOX_SEG_INDEX / MAX_SEG_INDEX
+
+        free_mask = np.logical_not(
+            np.isclose(self.base_env.global_overhead_map, obstacle_value, atol=1e-6)
+            | np.isclose(self.base_env.global_overhead_map, box_value, atol=1e-6)
+        )
+        free_indices = np.argwhere(free_mask)
         if len(free_indices) == 0:
-            raise RuntimeError("No free cells available in configuration space.")
+            raise RuntimeError("No free cells available in global free space.")
 
         for _ in range(1000):
             k = self.np_random.integers(0, len(free_indices))
@@ -133,7 +144,7 @@ class LowLevelNavEnv(gym.Env):
             x, y = self.base_env.pixel_indices_to_position(
                 int(i),
                 int(j),
-                self.base_env.configuration_space.shape,
+                self.base_env.global_overhead_map.shape,
             )
             candidate = np.array([x, y], dtype=np.float32)
             if self._is_valid_position(candidate, include_boxes=True):
@@ -576,6 +587,25 @@ class LowLevelRLPolicy:
         action, _ = self.model.predict(observation, deterministic=deterministic)
         return int(action)
 
+    def project_to_configuration_space(
+        self,
+        env: BoxDeliveryEnv,
+        position_xy: np.ndarray,
+    ) -> np.ndarray:
+        position_xy = np.asarray(position_xy[:2], dtype=np.float32)
+        i, j = env.position_to_pixel_indices(
+            float(position_xy[0]),
+            float(position_xy[1]),
+            env.configuration_space_thin.shape,
+        )
+
+        if env.configuration_space_thin[i, j] > 0.5:
+            return position_xy
+
+        nearest_i, nearest_j = env.closest_valid_cspace_thin_indices(i, j)
+        x, y = env.pixel_indices_to_position(nearest_i, nearest_j, env.configuration_space_thin.shape)
+        return np.asarray([x, y], dtype=np.float32)
+
     def build_observation_for_goal(
         self,
         env: BoxDeliveryEnv,
@@ -583,6 +613,7 @@ class LowLevelRLPolicy:
         robot_heading: float,
         goal_position: np.ndarray,
     ) -> np.ndarray:
+        goal_position = self.project_to_configuration_space(env, goal_position)
         env.update_global_overhead_map()
         channels = [
             env.get_local_map(env.global_overhead_map, robot_position, robot_heading),
@@ -601,6 +632,80 @@ class LowLevelRLPolicy:
         obs = np.stack(channels, axis=2)
         return (obs * 255).astype(np.uint8)
 
+    def execute_primitive_action(
+        self,
+        env: BoxDeliveryEnv,
+        action: int,
+        step_size_pixels: int = 1,
+    ) -> Dict:
+        """
+        Execute one low-level primitive action directly in BoxDeliveryEnv using
+        the same motion dynamics as LowLevelNavEnv.step().
+        """
+        step_size_m = step_size_pixels / env.local_map_pixels_per_meter
+        start_position = np.array([env.robot.body.position.x, env.robot.body.position.y], dtype=np.float32)
+
+        action = int(action)
+        direction = self._directions[action]
+        direction_norm = np.linalg.norm(direction)
+        if direction_norm > 0:
+            direction = direction / direction_norm
+
+        target_heading = float(np.arctan2(direction[1], direction[0])) if direction_norm > 0 else float(env.robot.body.angle)
+        env.robot.body.angle = target_heading
+        env.robot_hit_obstacle = False
+
+        moved_total = 0.0
+        max_internal_steps = 64
+        speed = float(env.target_speed * 2.0)
+        for _ in range(max_internal_steps):
+            if moved_total >= step_size_m:
+                break
+
+            prev = np.array([env.robot.body.position.x, env.robot.body.position.y], dtype=np.float32)
+            env.robot.body.angular_velocity = 0.0
+            env.robot.body.velocity = (direction * speed).tolist()
+            env.space.step(env.dt / env.steps)
+            curr = np.array([env.robot.body.position.x, env.robot.body.position.y], dtype=np.float32)
+
+            moved_step = float(np.linalg.norm(curr - prev))
+            moved_total += moved_step
+
+            if env.robot_hit_obstacle:
+                break
+
+            if moved_step < 1e-5:
+                break
+
+        env.robot.body.angular_velocity = 0.0
+        env.robot.body.velocity = (0.0, 0.0)
+        env.step_simulation_until_still()
+
+        end_position = np.array([env.robot.body.position.x, env.robot.body.position.y], dtype=np.float32)
+        moved_vec = end_position - start_position
+        moved_norm = float(np.linalg.norm(moved_vec))
+        if moved_norm > 1e-6:
+            moved_heading = float(np.arctan2(moved_vec[1], moved_vec[0]))
+            env.robot.body.angle = moved_heading
+
+        collision = bool(env.robot_hit_obstacle and moved_norm < 0.3 * step_size_m)
+
+        end_heading = float(env.restrict_heading_range(env.robot.body.angle))
+        path = np.asarray(
+            [
+                [float(start_position[0]), float(start_position[1]), float(target_heading)],
+                [float(end_position[0]), float(end_position[1]), float(end_heading)],
+            ],
+            dtype=np.float32,
+        )
+
+        return {
+            "path": path,
+            "start_position": start_position,
+            "end_position": end_position,
+            "collision": collision,
+        }
+
     def rollout_subgoal_path(
         self,
         env: BoxDeliveryEnv,
@@ -618,12 +723,14 @@ class LowLevelRLPolicy:
         step_size_m = step_size_pixels / env.local_map_pixels_per_meter
         robot_position = np.array(start_position[:2], dtype=np.float32)
         robot_heading = float(start_heading)
-        goal_position = np.array(goal_position[:2], dtype=np.float32)
+        goal_position = self.project_to_configuration_space(env, goal_position)
 
         path = [robot_position.copy()]
+        reached_goal = False
 
         for _ in range(max_steps):
             if np.linalg.norm(robot_position - goal_position) < goal_threshold_m:
+                reached_goal = True
                 break
 
             obs = self.build_observation_for_goal(
@@ -653,7 +760,11 @@ class LowLevelRLPolicy:
             robot_position = candidate
             path.append(robot_position.copy())
 
-        path.append(goal_position.copy())
+        if reached_goal and np.linalg.norm(path[-1] - goal_position) >= 1e-6:
+            path.append(goal_position.copy())
+
+        if len(path) == 1:
+            path.append(path[0].copy())
 
         path_with_heading = []
         prev = path[0]

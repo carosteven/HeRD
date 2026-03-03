@@ -13,7 +13,7 @@ from low_level_rl_policy import LowLevelNavEnv, LowLevelRLPolicy
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Visually evaluate a trained low-level HRL navigation policy.")
-    parser.add_argument("--model-path", type=str, default="models/rl_models/low_level_rl_policy")
+    parser.add_argument("--model-path", type=str, default="models/rl_models/low_level_hrl_policy")
     parser.add_argument("--algorithm", type=str, default="auto", choices=["auto", "ppo", "dqn"])
 
     parser.add_argument("--episodes", type=int, default=10)

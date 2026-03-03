@@ -9,7 +9,6 @@ from skimage.draw import line
 
 from environment import BoxDeliveryEnv
 from diffusionPolicy import DiffusionUnetLowdimPolicy
-from low_level_rl_policy import LowLevelRLPolicy
 from submodules.BenchNPIN.benchnpin.baselines.box_delivery.SAM.policy import DenseActionSpacePolicy
 
 def get_latest_model(model_dir, model_name):
@@ -53,18 +52,6 @@ class HeRDPolicy():
         if self.cfg.diffusion.use_diffusion_policy:
             self.diffusion_policy = self.create_diffusion_policy()
             self.obs_buffer = collections.deque(maxlen=self.cfg.diffusion.n_obs_steps)
-
-        self.low_level_policy = None
-        low_level_cfg = getattr(self.cfg, 'low_level', None)
-        use_low_level = False
-        if low_level_cfg is not None:
-            if isinstance(low_level_cfg, dict):
-                use_low_level = low_level_cfg.get('use_low_level_rl', False)
-            else:
-                use_low_level = getattr(low_level_cfg, 'use_low_level_rl', False)
-
-        if use_low_level:
-            self.low_level_policy = self.create_low_level_policy()
 
     
     def create_rl_policy(self):
@@ -165,23 +152,6 @@ class HeRDPolicy():
         policy.eval()  # Set to evaluation mode
 
         return policy
-
-    def create_low_level_policy(self):
-        low_level_cfg = getattr(self.cfg, 'low_level', {})
-        if isinstance(low_level_cfg, dict):
-            algorithm = low_level_cfg.get('algorithm', 'ppo')
-            model_path = low_level_cfg.get('model_path', 'models/rl_models/low_level_hrl_policy')
-        else:
-            algorithm = getattr(low_level_cfg, 'algorithm', 'ppo')
-            model_path = getattr(low_level_cfg, 'model_path', 'models/rl_models/low_level_hrl_policy')
-
-        if not os.path.isabs(model_path):
-            model_path = os.path.join(os.path.dirname(__file__), model_path)
-
-        policy = LowLevelRLPolicy(algorithm=algorithm, device=str(self.device))
-        policy.load(model_path)
-        return policy
-    
 
     def check_path_for_box_collision(self, path, box_obs):
         """
@@ -326,31 +296,6 @@ class HeRDPolicy():
     def act(self, rl_obs, diff_obs, box_obs, robot_pose, exploration_eps=None):
         spatial_action, _ = self.rl_policy.predict(rl_obs, exploration_eps=exploration_eps)
         path, _ = self.env.position_controller.get_waypoints_to_spatial_action(robot_pose[0:2], robot_pose[2], spatial_action)
-
-        if self.low_level_policy is not None:
-            target_pos = np.array(path[-1][0:2], dtype=np.float32)
-            low_level_cfg = getattr(self.cfg, 'low_level', {})
-            if isinstance(low_level_cfg, dict):
-                ll_max_steps = low_level_cfg.get('max_steps', 64)
-                ll_goal_threshold = low_level_cfg.get('goal_threshold_m', 0.2)
-                ll_step_size_pixels = low_level_cfg.get('step_size_pixels', 1)
-                ll_deterministic = low_level_cfg.get('deterministic', True)
-            else:
-                ll_max_steps = getattr(low_level_cfg, 'max_steps', 64)
-                ll_goal_threshold = getattr(low_level_cfg, 'goal_threshold_m', 0.2)
-                ll_step_size_pixels = getattr(low_level_cfg, 'step_size_pixels', 1)
-                ll_deterministic = getattr(low_level_cfg, 'deterministic', True)
-
-            path = self.low_level_policy.rollout_subgoal_path(
-                env=self.env,
-                start_position=np.array(robot_pose[0:2], dtype=np.float32),
-                start_heading=float(robot_pose[2]),
-                goal_position=target_pos,
-                max_steps=ll_max_steps,
-                goal_threshold_m=ll_goal_threshold,
-                step_size_pixels=ll_step_size_pixels,
-                deterministic=ll_deterministic,
-            )
 
         if self.cfg.diffusion.use_diffusion_policy:
             box_in_path, _ = self.check_path_for_box_collision(path, box_obs)
