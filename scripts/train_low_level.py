@@ -22,7 +22,7 @@ def parse_args():
     parser.add_argument("--goal-threshold-m", type=float, default=0.2)
     parser.add_argument("--min-start-goal-distance-m", type=float, default=1.0)
 
-    parser.add_argument("--obstacle-config", type=str, default="small_columns")
+    parser.add_argument("--obstacle-config", type=str, default="large_columns")
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--seed", type=int, default=42)
 

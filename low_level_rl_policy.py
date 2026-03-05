@@ -3,6 +3,7 @@ from typing import Dict, Optional, Tuple
 
 import gymnasium as gym
 import numpy as np
+import pymunk
 import torch
 import torch.nn as nn
 from gymnasium import spaces
@@ -12,6 +13,7 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 from environment import (
     BOX_SEG_INDEX,
+    FLOOR_SEG_INDEX,
     MAX_SEG_INDEX,
     OBSTACLE_SEG_INDEX,
     WAYPOINT_MOVING_THRESHOLD,
@@ -107,6 +109,25 @@ class LowLevelNavEnv(gym.Env):
             )
         return bool(np.isclose(value, obstacle_value, atol=1e-6))
 
+    def _collides_with_obstacles(
+        self,
+        position_xy: np.ndarray,
+        include_boxes: bool = True,
+        radius_m: float = 0.0,
+    ) -> bool:
+        point = (float(position_xy[0]), float(position_xy[1]))
+        query_info = self.base_env.space.point_query(point, float(radius_m), pymunk.ShapeFilter())
+        obstacle_labels = {"wall", "divider", "column", "corner"}
+        if include_boxes:
+            obstacle_labels.add("box")
+
+        for query in query_info:
+            label = getattr(query.shape, "label", None)
+            if label in obstacle_labels:
+                return True
+
+        return False
+
     def _is_valid_position(self, position_xy: np.ndarray, include_boxes: bool = True) -> bool:
         self.base_env.update_global_overhead_map()
 
@@ -115,11 +136,23 @@ class LowLevelNavEnv(gym.Env):
             position_xy[1],
             self.base_env.global_overhead_map.shape,
         )
-        h, w = self.base_env.global_overhead_map.shape
-        if i < 0 or i >= h or j < 0 or j >= w:
+        value = self.base_env.global_overhead_map[i, j]
+        floor_value = FLOOR_SEG_INDEX / MAX_SEG_INDEX
+
+        if include_boxes:
+            if not np.isclose(value, floor_value, atol=1e-6):
+                return False
+        elif self._is_blocked_by_semantics(position_xy, include_boxes=include_boxes):
             return False
 
-        if self._is_blocked_by_semantics(position_xy, include_boxes=include_boxes):
+        if self._collides_with_obstacles(position_xy, include_boxes=include_boxes, radius_m=0.0):
+            return False
+
+        if self._collides_with_obstacles(
+            position_xy,
+            include_boxes=include_boxes,
+            radius_m=float(self.base_env.robot_radius),
+        ):
             return False
 
         return True
@@ -127,13 +160,8 @@ class LowLevelNavEnv(gym.Env):
     def _sample_valid_position(self) -> np.ndarray:
         self.base_env.update_global_overhead_map()
 
-        obstacle_value = OBSTACLE_SEG_INDEX / MAX_SEG_INDEX
-        box_value = BOX_SEG_INDEX / MAX_SEG_INDEX
-
-        free_mask = np.logical_not(
-            np.isclose(self.base_env.global_overhead_map, obstacle_value, atol=1e-6)
-            | np.isclose(self.base_env.global_overhead_map, box_value, atol=1e-6)
-        )
+        floor_value = FLOOR_SEG_INDEX / MAX_SEG_INDEX
+        free_mask = np.isclose(self.base_env.global_overhead_map, floor_value, atol=1e-6)
         free_indices = np.argwhere(free_mask)
         if len(free_indices) == 0:
             raise RuntimeError("No free cells available in global free space.")
@@ -196,6 +224,8 @@ class LowLevelNavEnv(gym.Env):
             start = self._sample_valid_position()
         else:
             start = np.array(start_pos, dtype=np.float32)
+            if not self._is_valid_position(start, include_boxes=True):
+                raise ValueError("Provided start_pos is not in free floor space.")
 
         if goal_pos is None:
             goal = self._sample_valid_position()
@@ -203,6 +233,8 @@ class LowLevelNavEnv(gym.Env):
                 goal = self._sample_valid_position()
         else:
             goal = np.array(goal_pos, dtype=np.float32)
+            if not self._is_valid_position(goal, include_boxes=True):
+                raise ValueError("Provided goal_pos is not in free floor space.")
 
         self.base_env.robot.body.position = (float(start[0]), float(start[1]))
         self.base_env.robot.body.angle = 0.0

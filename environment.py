@@ -466,8 +466,6 @@ class BoxDeliveryEnv(gym.Env):
                     
         
         # generate obstacles
-        print(self.cfg.env.obstacle_config)
-        print('*'*80)
         if self.cfg.env.obstacle_config == 'small_empty' or self.cfg.env.obstacle_config == 'large_empty':
             pass
         elif self.cfg.env.obstacle_config == 'small_columns':
