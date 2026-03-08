@@ -463,6 +463,32 @@ class BoxDeliveryEnv(gym.Env):
                                         'color': get_color('boundary')
                                     })
             return divider_dicts
+        
+        def add_apartment_obstacles():
+            obs_dict = []
+            
+            couch = [[-0.5, -4.4, 3, 1], [-1.5, -3.4, 1.5, 3]]
+            tv = [[4.75, -3, 0.5, 2]]
+            coffee_table = [[2.6, -2.5, 0.75, 1.5]]
+            counters = [[-1.5, 4.5, 7, 1], [-4.5, 3, 1, 2], [-2, 1.5, 6, 1.5]]
+            for furniture in [couch, tv, coffee_table, counters]:
+                for piece in furniture:
+                    x, y, length, width = piece
+                    obs_dict.append({'type': 'column',
+                                    'position': (x, y),
+                                    'vertices': np.array([
+                                        [x - length / 2, y - width / 2],  # bottom-left
+                                        [x + length / 2, y - width / 2],  # bottom-right
+                                        [x + length / 2, y + width / 2],  # top-right
+                                        [x - length / 2, y + width / 2],  # top-left
+                                        ]),
+                                    'length': length,
+                                    'width': width,
+                                    'color': get_color('boundary')
+                                    })
+            return obs_dict
+
+
                     
         
         # generate obstacles
@@ -474,25 +500,28 @@ class BoxDeliveryEnv(gym.Env):
             boundary_dicts.extend(add_random_columns(boundary_dicts, 8))
         elif self.cfg.env.obstacle_config == 'large_divider':
             boundary_dicts.extend(add_random_horiz_divider())
+        elif self.cfg.env.obstacle_config == 'apartment':
+            boundary_dicts.extend(add_apartment_obstacles())
         else:
             raise ValueError(f'Invalid obstacle config: {self.cfg.env.obstacle_config}')
         
         # generate corners
-        for i, (x, y) in enumerate([
-            (-self.room_length / 2, self.room_width / 2),
-            (self.room_length / 2, self.room_width / 2),
-            (self.room_length / 2, -self.room_width / 2),
-            (-self.room_length / 2, -self.room_width / 2),
-            ]):
-            if i == 1: # Skip the receptacle corner
-                continue
-            heading = -np.radians(i * 90)
-            boundary_dicts.append(
-                {'type': 'corner',
-                 'position': (x, y),
-                 'heading': heading,
-                 'color': get_color('boundary')
-                })
+        if not self.cfg.env.obstacle_config == 'apartment':
+            for i, (x, y) in enumerate([
+                (-self.room_length / 2, self.room_width / 2),
+                (self.room_length / 2, self.room_width / 2),
+                (self.room_length / 2, -self.room_width / 2),
+                (-self.room_length / 2, -self.room_width / 2),
+                ]):
+                if i == 1: # Skip the receptacle corner
+                    continue
+                heading = -np.radians(i * 90)
+                boundary_dicts.append(
+                    {'type': 'corner',
+                    'position': (x, y),
+                    'heading': heading,
+                    'color': get_color('boundary')
+                    })
             
         # generate corners for divider
         for obstacle in boundary_dicts:
@@ -976,9 +1005,9 @@ class BoxDeliveryEnv(gym.Env):
             prev_heading_diff = heading_diff
 
             # stop moving if robot collided with obstacle (stricter when not using diffusion for training rl policy)
-            if ((self.distance(robot_prev_waypoint_position, robot_position) > MOVE_STEP_SIZE and not self.cfg.diffusion.use_diffusion_policy) 
-                or (self.distance(robot_prev_position, robot_position) < MOVE_STEP_SIZE / 50 and done_turning)):
-
+            # if ((self.distance(robot_prev_waypoint_position, robot_position) > MOVE_STEP_SIZE and not self.cfg.diffusion.use_diffusion_policy) 
+                # or (self.distance(robot_prev_position, robot_position) < MOVE_STEP_SIZE / 50 and done_turning)):
+            if (self.distance(robot_prev_position, robot_position) < MOVE_STEP_SIZE / 50 and done_turning):
                 if self.robot_hit_obstacle:
                     robot_is_moving = False
                     robot_distance += self.distance(robot_prev_waypoint_position, robot_position) 
