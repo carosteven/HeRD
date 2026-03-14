@@ -9,18 +9,19 @@ function that evaluates pushing feasibility based on alignment with the
 target receptacle.
 
 Usage:
-    from herd_policy_with_sampling_planner import HeRDPolicyWithSamplingPlanner
+    from benchmark.rrt.herd_policy_with_sampling_planner import HeRDPolicyWithSamplingPlanner
     
     policy = HeRDPolicyWithSamplingPlanner(cfg=cfg)
     path, spatial_action = policy.act(rl_obs, diff_obs, box_obs, robot_pose)
 """
 
+import copy
 import os
 import sys
 import torch
 import numpy as np
 from herd_policy import HeRDPolicy
-from sampling_pushing_planner import SamplingPushingPlanner
+from benchmark.rrt.sampling_pushing_planner import SamplingPushingPlanner
 
 
 class HeRDPolicyWithSamplingPlanner(HeRDPolicy):
@@ -36,28 +37,28 @@ class HeRDPolicyWithSamplingPlanner(HeRDPolicy):
     """
     
     def __init__(self, cfg, job_id=None):
-        super().__init__(cfg=cfg, job_id=job_id)
-        
-        # Replace diffusion policy with SamplingPushingPlanner
-        if self.cfg.diffusion.use_diffusion_policy:
-            print("HeRDPolicyWithSamplingPlanner: Using SamplingPushingPlanner (RRT* with box-aware costs)")
-            self.diffusion_policy = SamplingPushingPlanner(
-                horizon=self.cfg.diffusion.horizon,
-                max_iterations=5000,
-                step_size=0.15,
-                goal_sample_rate=0.15,
-                rewire_radius_factor=2.0,
-                collision_check_resolution=0.05,
-                box_radius=0.22,
-                verbose=False,
-                # Ensure RRT outputs go through the same feasibility conditioning
-                condition_trajectory=True,
-                conditioning_functions=[self.ensure_waypoint_feasibility, self.prune_by_distance, self.ensure_path_feasibility],
-                robot_radius=0.66
-            )
-            # Don't need obs buffer for sampling planner
-            if hasattr(self, 'obs_buffer'):
-                del self.obs_buffer
+        # Prevent base policy from loading diffusion checkpoint for RRT mode.
+        base_cfg = copy.deepcopy(cfg)
+        base_cfg.diffusion.use_diffusion_policy = False
+        super().__init__(cfg=base_cfg, job_id=job_id)
+
+        self.use_sampling_planner = True
+
+        print("HeRDPolicyWithSamplingPlanner: Using SamplingPushingPlanner (RRT* with box-aware costs)")
+        self.diffusion_policy = SamplingPushingPlanner(
+            horizon=self.cfg.diffusion.horizon,
+            max_iterations=5000,
+            step_size=0.15,
+            goal_sample_rate=0.15,
+            rewire_radius_factor=2.0,
+            collision_check_resolution=0.05,
+            box_radius=0.22,
+            verbose=False,
+            # Ensure RRT outputs go through the same feasibility conditioning
+            condition_trajectory=True,
+            conditioning_functions=[self.ensure_waypoint_feasibility, self.prune_by_distance, self.ensure_path_feasibility],
+            robot_radius=0.66
+        )
     
     def act(self, rl_obs, diff_obs, box_obs, robot_pose, exploration_eps=None):
         """
@@ -70,7 +71,7 @@ class HeRDPolicyWithSamplingPlanner(HeRDPolicy):
             robot_pose[0:2], robot_pose[2], spatial_action
         )
 
-        if self.cfg.diffusion.use_diffusion_policy:
+        if self.use_sampling_planner:
             box_in_path, _ = self.check_path_for_box_collision(path, box_obs)
 
             if box_in_path is None:

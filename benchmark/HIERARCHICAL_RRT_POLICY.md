@@ -9,7 +9,7 @@ The policy is hierarchical with two levels:
 1. **High-level controller (RL)** selects a spatial action / target region.
 2. **Low-level controller (RRT planner)** generates a waypoint path that executes that high-level intent while respecting geometry and task constraints.
 
-In code, this is implemented by combining the standard `HeRDPolicy` logic with `SamplingPushingPlanner` in `herd_policy_with_sampling_planner.py`.
+In code, this is implemented by combining the standard `HeRDPolicy` logic with `SamplingPushingPlanner` in `benchmark/herd_policy_with_sampling_planner.py`.
 
 ## End-to-End Action Flow
 
@@ -69,6 +69,6 @@ The low-level integration must preserve this pipeline:
 ## Relevant Files
 
 - `herd_policy.py` — base hierarchical policy and feasibility functions
-- `herd_policy_with_sampling_planner.py` — hierarchical policy variant using RRT low-level planning
-- `sampling_pushing_planner.py` — RRT planner implementation
+- `benchmark/herd_policy_with_sampling_planner.py` — hierarchical policy variant using RRT low-level planning
+- `benchmark/sampling_pushing_planner.py` — RRT planner implementation
 - `scripts/run_experiments.py` — experiment/evaluation entry point

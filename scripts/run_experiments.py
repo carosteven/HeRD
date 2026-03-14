@@ -16,7 +16,7 @@ if project_root not in sys.path:
 import argparse
 from scripts.train_rl_policy import DDQNTrainer
 from herd_policy import HeRDPolicy
-from herd_policy_with_sampling_planner import HeRDPolicyWithSamplingPlanner
+from benchmark.rrt.herd_policy_with_sampling_planner import HeRDPolicyWithSamplingPlanner
 from submodules.BenchNPIN.benchnpin.common.metrics.base_metric import BaseMetric
 from submodules.BenchNPIN.benchnpin.common.utils.utils import DotDict
 
@@ -37,11 +37,12 @@ def main(cfg, job_id):
         for model_name, obs_config, diffusion_config, policy_type in zip(cfg.evaluate.model_names, cfg.evaluate.obs_configs, cfg.evaluate.diffusion_configs, cfg.evaluate.policy_types):
             cfg.rl_policy.model_name = model_name
             cfg.env.obstacle_config = obs_config
-            cfg.diffusion.use_diffusion_policy = diffusion_config
 
             if policy_type == 'diffusion':
+                cfg.diffusion.use_diffusion_policy = diffusion_config
                 policy = HeRDPolicy(cfg=cfg)
             elif policy_type == 'rrt':
+                cfg.diffusion.use_diffusion_policy = False
                 policy = HeRDPolicyWithSamplingPlanner(cfg=cfg)
             policy.evaluate(num_eps=num_eps)
 
@@ -102,10 +103,10 @@ if __name__ == '__main__':
             'evaluate': {
                 'eval_mode': True,
                 'num_eps': 20,
-                'obs_configs': ['small_empty', 'small_columns', 'large_columns', 'large_divider'], # list of observation configurations
+                'obs_configs': ['small_empty', 'small_empty', 'large_columns', 'large_divider'], # list of observation configurations
                 'model_names': ['sampling_rl_policy', 'sampling_rl_policy', 'sampling_rl_policy', 'sampling_rl_policy'], # list of model names to evaluate
                 'diffusion_configs': [True, True, True, True],
-                'policy_types': ['diffusion', 'diffusion', 'diffusion', 'diffusion']
+                'policy_types': ['rrt', 'diffusion', 'diffusion', 'diffusion']
             },
             'rewards': {
                 'max_distance_reward': True,

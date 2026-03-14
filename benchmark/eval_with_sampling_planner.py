@@ -12,15 +12,15 @@ Or install the full requirements:
     pip install -r requirements.txt
 
 Usage:
-    python3 eval_with_sampling_planner.py --num_eps 10 --config small_columns
-    python3 eval_with_sampling_planner.py --num_eps 50 --config large_divider --verbose
+    python3 benchmark/eval_with_sampling_planner.py --num_eps 10 --config small_columns
+    python3 benchmark/eval_with_sampling_planner.py --num_eps 50 --config large_divider --verbose
 """
 
 import sys
 import os
 import argparse
 
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__)))
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
@@ -35,7 +35,7 @@ import torch
 try:
     from submodules.BenchNPIN.benchnpin.common.utils.utils import DotDict
     from environment import BoxDeliveryEnv
-    from herd_policy_with_sampling_planner import HeRDPolicyWithSamplingPlanner
+    from benchmark.herd_policy_with_sampling_planner import HeRDPolicyWithSamplingPlanner
 except ModuleNotFoundError as e:
     print(f"\nError: Missing dependencies!")
     print(f"Details: {e}")

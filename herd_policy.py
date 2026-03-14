@@ -8,7 +8,6 @@ from shapely.geometry import LineString, Polygon
 from skimage.draw import line
 
 from environment import BoxDeliveryEnv
-from diffusionPolicy import DiffusionUnetLowdimPolicy
 from submodules.BenchNPIN.benchnpin.baselines.box_delivery.SAM.policy import DenseActionSpacePolicy
 
 def get_latest_model(model_dir, model_name):
@@ -101,6 +100,7 @@ class HeRDPolicy():
 
     
     def create_diffusion_policy(self):
+        from diffusionPolicy import DiffusionUnetLowdimPolicy
         # Model configuration
         model_config = {
             'input_dim': self.cfg.diffusion.action_dim,  # Only actions in trajectory for global conditioning
