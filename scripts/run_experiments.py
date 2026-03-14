@@ -99,8 +99,8 @@ if __name__ == '__main__':
                 'eval_mode': True,
                 'num_eps': 20,
                 'obs_configs': ['small_empty', 'small_columns', 'large_columns', 'large_divider'], # list of observation configurations
-                'model_names': ['herd_rl_policy', 'herd_rl_policy', 'herd_rl_policy', 'herd_rl_policy'], # list of model names to evaluate
-                'diffusion_configs': [True, True, True, True],
+                'model_names': ['base_se', 'base_sc', 'base_lc', 'base_ld'], # list of model names to evaluate
+                'diffusion_configs': [False, False, False, False],
             },
             'rewards': {
                 'max_distance_reward': True,
