@@ -16,6 +16,7 @@ if project_root not in sys.path:
 import argparse
 from scripts.train_rl_policy import DDQNTrainer
 from herd_policy import HeRDPolicy
+from benchmark.rrt.herd_policy_with_sampling_planner import HeRDPolicyWithSamplingPlanner
 from greedy_heuristic_policy import GreedyHeuristicPolicy
 from submodules.BenchNPIN.benchnpin.common.metrics.base_metric import BaseMetric
 from submodules.BenchNPIN.benchnpin.common.utils.utils import DotDict
@@ -34,24 +35,19 @@ def main(cfg, job_id):
     
     if cfg.evaluate.eval_mode:
         num_eps = cfg.evaluate.num_eps
-        planner_types = getattr(cfg.evaluate, 'planner_types', ['herd'] * len(cfg.evaluate.model_names))
-
-        for model_name, obs_config, diffusion_config, planner_type in zip(
-            cfg.evaluate.model_names,
-            cfg.evaluate.obs_configs,
-            cfg.evaluate.diffusion_configs,
-            planner_types,
-        ):
+        for model_name, obs_config, diffusion_config, policy_type in zip(cfg.evaluate.model_names, cfg.evaluate.obs_configs, cfg.evaluate.diffusion_configs, cfg.evaluate.policy_types):
+            cfg.rl_policy.model_name = model_name
             cfg.env.obstacle_config = obs_config
 
-            if planner_type == 'greedy_heuristic':
+            if policy_type == 'diffusion':
+                cfg.diffusion.use_diffusion_policy = diffusion_config
+                policy = HeRDPolicy(cfg=cfg)
+            elif policy_type == 'greedy_heuristic':
                 policy = GreedyHeuristicPolicy(cfg=cfg)
                 policy.evaluate(num_eps=num_eps)
-            else:
-                cfg.rl_policy.model_name = model_name
-                cfg.diffusion.use_diffusion_policy = diffusion_config
-
-                policy = HeRDPolicy(cfg=cfg)
+            elif policy_type == 'rrt':
+                cfg.diffusion.use_diffusion_policy = False
+                policy = HeRDPolicyWithSamplingPlanner(cfg=cfg)
                 policy.evaluate(num_eps=num_eps)
 
 if __name__ == '__main__':
