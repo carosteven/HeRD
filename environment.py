@@ -1554,4 +1554,3 @@ class BoxDeliveryEnv(gym.Env):
         plt.close('all')
         if self.cfg.render.show:
             self.renderer.close()
-

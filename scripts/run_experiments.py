@@ -17,6 +17,7 @@ import argparse
 from scripts.train_rl_policy import DDQNTrainer
 from herd_policy import HeRDPolicy
 from benchmark.rrt.herd_policy_with_sampling_planner import HeRDPolicyWithSamplingPlanner
+from benchmark.greedy_heuristic import GreedyHeuristicPolicy
 from submodules.BenchNPIN.benchnpin.common.metrics.base_metric import BaseMetric
 from submodules.BenchNPIN.benchnpin.common.utils.utils import DotDict
 
@@ -34,13 +35,18 @@ def main(cfg, job_id):
     
     if cfg.evaluate.eval_mode:
         num_eps = cfg.evaluate.num_eps
-        for model_name, obs_config, diffusion_config, policy_type in zip(cfg.evaluate.model_names, cfg.evaluate.obs_configs, cfg.evaluate.diffusion_configs, cfg.evaluate.policy_types):
+        for model_name, obs_config, policy_type in zip(cfg.evaluate.model_names, cfg.evaluate.obs_configs, cfg.evaluate.policy_types):
             cfg.rl_policy.model_name = model_name
             cfg.env.obstacle_config = obs_config
 
-            if policy_type == 'diffusion':
-                cfg.diffusion.use_diffusion_policy = diffusion_config
+            if policy_type == 'herd':
+                cfg.diffusion.use_diffusion_policy = True
                 policy = HeRDPolicy(cfg=cfg)
+            elif policy_type == 'sam':
+                cfg.diffusion.use_diffusion_policy = False
+                policy = HeRDPolicy(cfg=cfg)
+            elif policy_type == 'greedy_heuristic':
+                policy = GreedyHeuristicPolicy(cfg=cfg)
             elif policy_type == 'rrt':
                 cfg.diffusion.use_diffusion_policy = False
                 policy = HeRDPolicyWithSamplingPlanner(cfg=cfg)
@@ -103,10 +109,9 @@ if __name__ == '__main__':
             'evaluate': {
                 'eval_mode': True,
                 'num_eps': 20,
-                'obs_configs': ['small_empty', 'small_empty', 'large_columns', 'large_divider'], # list of observation configurations
-                'model_names': ['sampling_rl_policy', 'sampling_rl_policy', 'sampling_rl_policy', 'sampling_rl_policy'], # list of model names to evaluate
-                'diffusion_configs': [True, True, True, True],
-                'policy_types': ['rrt', 'diffusion', 'diffusion', 'diffusion']
+                'obs_configs': ['small_empty', 'small_columns', 'large_columns', 'large_divider'], # list of observation configurations
+                'model_names': ['herd_rl_policy', 'herd_rl_policy', 'herd_rl_policy', 'herd_rl_policy'], # list of model names to evaluate
+                'policy_types': ['herd', 'herd', 'herd', 'herd'] # options: {herd, sam, rrt, greedy_heuristic}
             },
             'rewards': {
                 'max_distance_reward': True,
