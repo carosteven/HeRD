@@ -17,7 +17,7 @@ import argparse
 from scripts.train_rl_policy import DDQNTrainer
 from herd_policy import HeRDPolicy
 from benchmark.rrt.herd_policy_with_sampling_planner import HeRDPolicyWithSamplingPlanner
-from greedy_heuristic_policy import GreedyHeuristicPolicy
+from benchmark.greedy_heuristic import GreedyHeuristicPolicy
 from submodules.BenchNPIN.benchnpin.common.metrics.base_metric import BaseMetric
 from submodules.BenchNPIN.benchnpin.common.utils.utils import DotDict
 
@@ -35,20 +35,22 @@ def main(cfg, job_id):
     
     if cfg.evaluate.eval_mode:
         num_eps = cfg.evaluate.num_eps
-        for model_name, obs_config, diffusion_config, policy_type in zip(cfg.evaluate.model_names, cfg.evaluate.obs_configs, cfg.evaluate.diffusion_configs, cfg.evaluate.policy_types):
+        for model_name, obs_config, policy_type in zip(cfg.evaluate.model_names, cfg.evaluate.obs_configs, cfg.evaluate.policy_types):
             cfg.rl_policy.model_name = model_name
             cfg.env.obstacle_config = obs_config
 
-            if policy_type == 'diffusion':
-                cfg.diffusion.use_diffusion_policy = diffusion_config
+            if policy_type == 'herd':
+                cfg.diffusion.use_diffusion_policy = True
+                policy = HeRDPolicy(cfg=cfg)
+            elif policy_type == 'sam':
+                cfg.diffusion.use_diffusion_policy = False
                 policy = HeRDPolicy(cfg=cfg)
             elif policy_type == 'greedy_heuristic':
                 policy = GreedyHeuristicPolicy(cfg=cfg)
-                policy.evaluate(num_eps=num_eps)
             elif policy_type == 'rrt':
                 cfg.diffusion.use_diffusion_policy = False
                 policy = HeRDPolicyWithSamplingPlanner(cfg=cfg)
-                policy.evaluate(num_eps=num_eps)
+            policy.evaluate(num_eps=num_eps)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
@@ -79,7 +81,7 @@ if __name__ == '__main__':
         # High level configuration for the box delivery task
         cfg={
             'render': {
-                'show': True,           # if true display the environment
+                'show': False,           # if true display the environment
                 'show_obs': False,       # if true show observation
             },
             'boxes': {
@@ -91,7 +93,6 @@ if __name__ == '__main__':
             },
             'misc': {
                 'random_seed': 1,
-                'inactivity_cutoff': 200
             },
             'rl_policy': {
                 'model_path': 'models/rl_models',
@@ -108,10 +109,9 @@ if __name__ == '__main__':
             'evaluate': {
                 'eval_mode': True,
                 'num_eps': 20,
-                'obs_configs': ['large_columns', 'small_columns', 'large_columns', 'large_divider'], # list of observation configurations
+                'obs_configs': ['small_empty', 'small_columns', 'large_columns', 'large_divider'], # list of observation configurations
                 'model_names': ['herd_rl_policy', 'herd_rl_policy', 'herd_rl_policy', 'herd_rl_policy'], # list of model names to evaluate
-                'diffusion_configs': [True, True, True, True],
-                'planner_types': ['greedy_heuristic', 'greedy_heuristic', 'greedy_heuristic', 'greedy_heuristic'], # options: 'herd' or 'greedy_heuristic'
+                'policy_types': ['herd', 'herd', 'herd', 'herd'] # options: {herd, sam, rrt, greedy_heuristic}
             },
             'rewards': {
                 'max_distance_reward': True,

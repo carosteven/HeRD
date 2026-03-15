@@ -6,8 +6,9 @@ from typing import List, Optional, Sequence, Tuple
 import numpy as np
 from skimage.draw import line
 
+import environment as _env_module
 from environment import BoxDeliveryEnv
-from greedy_heuristic_planner import GreedyHeuristicPlanner
+from .planner import GreedyHeuristicPlanner
 from submodules.BenchNPIN.benchnpin.common.controller.position_controller import (
     pixel_indices_to_position,
     position_to_pixel_indices,
@@ -18,6 +19,9 @@ class GreedyHeuristicPolicy:
     """Classical non-ML baseline wrapper for evaluation in BoxDeliveryEnv."""
 
     def __init__(self, cfg):
+        # Use a tighter waypoint acceptance radius for the greedy heuristic planner.
+        _env_module.WAYPOINT_MOVING_THRESHOLD = 0.15
+
         self.env = BoxDeliveryEnv(cfg)
         self.env.reset()
         self.cfg = self.env.cfg
